@@ -23,15 +23,47 @@ _SYSTEM_PROMPT = """You write the cold-open of an interactive narrative RPG.
 
 Constraints:
 - Second person ("You ...").
-- 180-360 words, 4-8 short paragraphs.
+- 180-320 words, 4-8 short paragraphs. Hard ceiling: NEVER exceed 320 words.
+  Finishing 50 words early is far better than being cut off mid-sentence.
 - Honor the SCENARIO TONE rules and the world LORE.
 - Establish setting, sensory detail, and one immediate dramatic hook.
 - Reference the player's CHARACTER SETUP organically — never list it as
   a stat block.
 - End on a question, beat, or speaker-tag that invites the player's first
   action; do not narrate the player's response.
+- ALWAYS end with terminal punctuation (. ! ? …) — never stop mid-word
+  or mid-sentence. Plan your closing sentence and leave token headroom
+  to finish it cleanly.
 - No headings, no markdown beyond paragraph breaks.
 """
+
+
+def _clean_truncated_opening(text: str) -> str:
+    """Trim a mid-sentence cut-off back to the last complete sentence.
+
+    DeepSeek tends to fill the entire ``max_tokens`` budget in PT-BR
+    (heavier tokenizer) and gets cut by the API rather than stopping at
+    a natural pause the way Claude does. This mirrors the cleanup used
+    by the in-game narrator path so a truncated opening still reads as
+    a complete piece of prose.
+    """
+    if not text:
+        return text
+    stripped = text.rstrip()
+    if stripped and stripped[-1] in '.!?…"”»)':
+        return text
+    last_end = -1
+    for i in range(len(stripped) - 1, -1, -1):
+        ch = stripped[i]
+        if ch in '.!?…':
+            last_end = i
+            break
+        if ch in '"”»)' and i > 0 and stripped[i - 1] in '.!?…':
+            last_end = i
+            break
+    if last_end > 0 and last_end > len(stripped) * 0.25:
+        return stripped[:last_end + 1]
+    return text
 
 
 def format_setup_lines(
@@ -135,4 +167,4 @@ async def generate_opening(
         {"role": "user", "content": user},
     ]
     text = await router.complete(messages, max_tokens=max_tokens)
-    return (text or "").strip()
+    return _clean_truncated_opening((text or "").strip())

@@ -2018,38 +2018,43 @@ class GameSession:
         return "\n\n".join(sections)
 
     def _format_story_cards_for_npc(self, npc_name: str) -> str:
-        """Return story cards visible to a specific NPC.
+        """Return a compact list of story card names visible to a specific NPC.
 
-        Camada 3 — story cards may declare an optional `known_by` list in
-        their content dict. When present, only NPCs in that list (or NPCs
-        whose card name matches the card itself) treat the card as known
-        knowledge. When absent, the card is public — every NPC may
-        reference it (default behavior, scenario-agnostic).
+        Camada 3 — emits only the card type + name (one per line), grouped
+        by type. The full card content already appears once in the global
+        ``story_cards_context`` (WORLD LORE block); duplicating every
+        field here, per NPC, was inflating the system prompt to several
+        MB on scenarios with hundreds of cards. The knowledge-boundary
+        block only needs to *restrict what each NPC may reference*, so a
+        list of names is sufficient — the narrator can resolve the names
+        against WORLD LORE.
+
+        ``known_by`` filtering still applies: cards with an explicit
+        ``known_by`` list are hidden from NPCs not in that list (an NPC
+        always knows their own card).
         """
         if not npc_name or not self._story_cards:
             return ""
         npc_lower = npc_name.strip().lower()
-        lines: list[str] = []
+        by_type: dict[str, list[str]] = {}
         for card in self._story_cards:
             content = card.content if isinstance(card.content, dict) else {}
             known_by = content.get("known_by")
             if isinstance(known_by, list) and known_by:
                 allowed = {str(n).strip().lower() for n in known_by if isinstance(n, str)}
-                # An NPC always knows their own card.
                 if card.name.strip().lower() == npc_lower:
                     pass
                 elif npc_lower not in allowed:
                     continue
             ct = getattr(card, "card_type", None)
             ct_val = ct.value if hasattr(ct, "value") else str(ct)
-            parts = [f"[{ct_val}] {card.name}"]
-            for k, v in content.items():
-                if k == "known_by":
-                    continue
-                if v:
-                    parts.append(f"  {k}: {v}")
-            lines.append("\n".join(parts))
-        return "\n".join(lines)
+            by_type.setdefault(ct_val, []).append(card.name)
+        if not by_type:
+            return ""
+        return "\n".join(
+            f"[{ct}] " + ", ".join(names)
+            for ct, names in by_type.items()
+        )
 
     def _build_npc_knowledge_boundaries_block(
         self,

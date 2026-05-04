@@ -1,14 +1,27 @@
 from __future__ import annotations
 import asyncio
 import inspect
+import json
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import AsyncIterator
 
 import litellm
+
+# Forensic dump of every LLM call for cost / cache investigation.
+# Activate by setting LUNAR_DUMP_LLM_CALLS=1 — writes one JSON per call to
+# logs/llm_calls/<utc-ts>_<short-id>_<caller>.json. Files contain the full
+# request (messages, model, max_tokens) + response + timing, so we can
+# reconstruct exactly what every provider received without depending on
+# upstream dashboards.
+_DUMP_ENABLED = os.environ.get("LUNAR_DUMP_LLM_CALLS", "0") == "1"
+_DUMP_DIR = Path(os.environ.get("LUNAR_DUMP_LLM_DIR", "logs/llm_calls"))
 
 # Retry delays (seconds) for transient proxy/upstream failures.
 # Total attempts = len(_PROXY_RETRY_DELAYS) + 1.
@@ -83,7 +96,74 @@ def _count_message_chars(messages: list[dict]) -> tuple[int, int]:
     return system_chars, total_chars
 
 
-def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elapsed: float):
+def _serialize_messages(messages: list[dict]) -> list[dict]:
+    """Return a deep-copied, JSON-safe view of the LLM messages."""
+    out: list[dict] = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = [
+                {k: v for k, v in part.items()} if isinstance(part, dict) else str(part)
+                for part in content
+            ]
+        out.append({"role": msg.get("role", ""), "content": content})
+    return out
+
+
+def _extract_response_text(response) -> str:
+    """Pull the assistant text from a litellm response (best-effort)."""
+    try:
+        choice = response.choices[0]
+        msg = getattr(choice, "message", None)
+        if msg is not None:
+            return getattr(msg, "content", "") or ""
+        delta = getattr(choice, "delta", None)
+        if delta is not None:
+            return getattr(delta, "content", "") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _dump_call(
+    caller: str,
+    model: str,
+    messages: list[dict],
+    max_tokens: int,
+    response_text: str,
+    input_tokens: int,
+    output_tokens: int,
+    elapsed: float,
+    streamed: bool,
+) -> None:
+    """If enabled, write a full record of this LLM call to disk."""
+    if not _DUMP_ENABLED:
+        return
+    try:
+        _DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S_%f")[:-3]
+        short_id = uuid.uuid4().hex[:6]
+        safe_caller = caller.replace(":", "_").replace("/", "_")[:60]
+        path = _DUMP_DIR / f"{ts}_{short_id}_{safe_caller}.json"
+        record = {
+            "timestamp_utc": datetime.utcnow().isoformat(),
+            "caller": caller,
+            "model": model,
+            "max_tokens": max_tokens,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "elapsed_s": round(elapsed, 3),
+            "streamed": streamed,
+            "msg_count": len(messages),
+            "messages": _serialize_messages(messages),
+            "response_text": response_text,
+        }
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to dump LLM call to disk")
+
+
+def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elapsed: float, model: str = ""):
     """Log a completed LLM call with token usage."""
     system_chars, total_chars = _count_message_chars(messages)
     usage = getattr(response, "usage", None)
@@ -108,6 +188,17 @@ def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elap
         "🔥 LLM CALL [%s] input=%d output=%d max=%d time=%.1fs msgs=%d sys_chars=%d",
         caller, input_tokens, output_tokens, max_tokens, elapsed,
         len(messages), system_chars,
+    )
+    _dump_call(
+        caller=caller,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        response_text=_extract_response_text(response),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        elapsed=elapsed,
+        streamed=False,
     )
 
 
@@ -238,7 +329,7 @@ class LLMRouter:
                 max_tokens=max_tokens,
                 **call_kwargs,
             )
-            _log_call(caller, messages, max_tokens, response, time.monotonic() - t0)
+            _log_call(caller, messages, max_tokens, response, time.monotonic() - t0, model=model)
             return response.choices[0].message.content
         except Exception:
             if self.config.fallback_provider and self.config.fallback_model:
@@ -257,7 +348,7 @@ class LLMRouter:
                     max_tokens=self.config.max_tokens,
                     **fb_kwargs,
                 )
-                _log_call(caller, messages, max_tokens, response, time.monotonic() - t0)
+                _log_call(caller, messages, max_tokens, response, time.monotonic() - t0, model=fallback_model)
                 return response.choices[0].message.content
             raise
 
@@ -308,7 +399,7 @@ class LLMRouter:
                     total_attempts, caller, type(last_exc).__name__, exc_info=last_exc,
                 )
                 raise last_exc
-            _log_call(caller + "(stream→sync)", messages, max_tokens, response, time.monotonic() - t0)
+            _log_call(caller + "(stream→sync)", messages, max_tokens, response, time.monotonic() - t0, model=model)
             content = response.choices[0].message.content
             if content:
                 yield content
@@ -323,19 +414,22 @@ class LLMRouter:
             **call_kwargs,
         )
         output_chars = 0
+        accumulated = ""
         async for chunk in response:
             delta = chunk.choices[0].delta.content
             if delta:
                 output_chars += len(delta)
+                accumulated += delta
                 yield delta
         # For streaming, estimate tokens from output chars
         system_chars, total_chars = _count_message_chars(messages)
+        elapsed = round(time.monotonic() - t0, 2)
         entry = {
             "caller": caller + "(stream)",
             "input_tokens": total_chars // 4,
             "output_tokens": output_chars // 4,
             "max_tokens": max_tokens,
-            "elapsed_s": round(time.monotonic() - t0, 2),
+            "elapsed_s": elapsed,
             "msg_count": len(messages),
             "system_chars": system_chars,
         }
@@ -344,4 +438,15 @@ class LLMRouter:
             "🔥 LLM CALL [%s] input≈%d output≈%d max=%d time=%.1fs msgs=%d sys_chars=%d",
             entry["caller"], entry["input_tokens"], entry["output_tokens"],
             max_tokens, entry["elapsed_s"], len(messages), system_chars,
+        )
+        _dump_call(
+            caller=caller + "(stream)",
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            response_text=accumulated,
+            input_tokens=total_chars // 4,
+            output_tokens=output_chars // 4,
+            elapsed=elapsed,
+            streamed=True,
         )
