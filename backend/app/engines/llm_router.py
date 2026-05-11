@@ -266,8 +266,13 @@ class LLMConfig:
 
 # When ANTHROPIC_PROXY_URL is set, Anthropic requests route through the
 # Claude Max Proxy (uses Pro/Max subscription instead of API rate limits).
-_ANTHROPIC_PROXY_URL = os.environ.get("ANTHROPIC_PROXY_URL", "")
-_ANTHROPIC_PROXY_KEY = os.environ.get("ANTHROPIC_PROXY_KEY", "proxy")
+# Read from settings (which loads .env) before falling back to the shell env,
+# otherwise editing .env alone has no effect — pydantic-settings populates the
+# settings object but never writes back into os.environ.
+from app.config import settings as _settings
+
+_ANTHROPIC_PROXY_URL = _settings.anthropic_proxy_url or os.environ.get("ANTHROPIC_PROXY_URL", "")
+_ANTHROPIC_PROXY_KEY = _settings.anthropic_proxy_key or os.environ.get("ANTHROPIC_PROXY_KEY", "proxy")
 
 
 class LLMRouter:
