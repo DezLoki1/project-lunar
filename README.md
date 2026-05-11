@@ -4,13 +4,14 @@
 
 <p align="center">
   <strong>An open-source storytelling engine where every choice reshapes the world.</strong><br>
-  <sub>Authors create worlds. Players live adventures. AI narrates everything.</sub>
+  <sub>Authors build worlds. Players live adventures. AI narrates everything — bilingually, with memory that never forgets.</sub>
 </p>
 
 <p align="center">
   <a href="#features">Features</a> &middot;
   <a href="#quickstart">Quickstart</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
+  <a href="#scenarios--setup-wizard">Scenarios</a> &middot;
   <a href="#memory-system">Memory</a> &middot;
   <a href="#combat-system">Combat</a> &middot;
   <a href="#llm-providers">LLM Providers</a> &middot;
@@ -22,9 +23,9 @@
 
 ## What is Project Lunar?
 
-Project Lunar is a **local-first** narrative RPG platform powered by AI. Authors build scenarios with lore, NPCs, locations, and factions. Players live through dynamically generated adventures narrated by LLMs with persistent memory, a reactive world, and creativity-based combat.
+Project Lunar is a **local-first** narrative RPG **engine**, not a single game. Authors build scenarios — fantasy, sci-fi, modern, slice-of-life, anything — with lore, NPCs, locations, factions and a setup wizard. Players live through dynamically generated adventures narrated by LLMs with persistent multi-tier memory, a reactive world, creativity-based combat, and AI-generated cold-opens that respond to who you choose to be.
 
-No HP bars. No mana pools. No grinding. Just **storytelling**.
+No HP bars. No mana pools. No grinding. Just **storytelling** — in English or Brazilian Portuguese.
 
 ---
 
@@ -32,18 +33,22 @@ No HP bars. No mana pools. No grinding. Just **storytelling**.
 
 | | Feature | Description |
 |---|---------|-------------|
+| **Scenarios** | Setup Wizard | Authors define questions with text/choice fields; players answer at campaign start. Answers interpolate into lore via `{{variable}}` syntax |
+| **Openings** | AI-Generated Cold Opens | Set `opening_mode: ai` and the narrator writes a unique 180-320 word opening per campaign, weaving in the player's setup answers |
 | **Narrator** | Mode-Aware Engine | Switches between Narrative, Combat, and Meta modes with real-time SSE streaming |
-| **Memory** | 3-Tier Crystal Memory | Raw events → short crystals → long crystals with structured crystallization (relationships, promises, key events) |
-| **World** | Reactive World | Off-screen world evolves proportionally to narrative time elapsed |
-| **Combat** | Creativity-Based | No stats — actions scored on coherence, creativity, and context with anti-griefing |
-| **NPCs** | Independent Minds | Each NPC maintains private thoughts (feeling, goal, opinion, secret plan) updated every turn |
+| **Memory** | 4-Tier Crystal Pyramid | SHORT → MEDIUM → LONG → MEMORY. Auto-crystallizes every 4 actions with strict name-preservation and witness filtering |
+| **World** | Reactive World | Off-screen world evolves proportionally to in-narrative time elapsed |
+| **Combat** | Creativity-Based + Power Levels | No stats — actions scored on coherence, creativity, context. LLM evaluates player vs. opponent power using story card NPCs as anchors. Toggle on/off per campaign |
+| **NPCs** | Independent Minds | Each NPC tracks private feeling, goal, opinion_of_player, secret_plan. Fuzzy dedup with LLM confirmation. Witnessed-by filter prevents NPCs from "knowing" off-screen events |
 | **Graph** | Knowledge Graph | Neo4j-powered entity tracking with relationship extraction and canonical name resolution |
 | **Journal** | Auto-Detection | AI identifies significant events (discoveries, relationship changes, combat, decisions) and logs them |
 | **Plots** | Auto-Plot Generator | Macro story arcs, micro-hooks, and NPC generation on dynamic cooldowns with plot lock system |
-| **Inventory** | Item Lifecycle | Narrative-driven item tracking via inline tags (`[ITEM_ADD]`, `[ITEM_USE]`, `[ITEM_LOSE]`) |
-| **Scenarios** | Builder + Import/Export | Create and share worlds as JSON with AI-powered lore extraction |
+| **Inventory** | Item Lifecycle | Narrative-driven via inline tags `[ITEM_ADD]`, `[ITEM_USE]`, `[ITEM_LOSE]` parsed from LLM output |
 | **Rewind** | Undo System | Rewind last action to explore different story branches |
-| **Multi-LLM** | Provider Switching | DeepSeek, Anthropic (Sonnet/Opus), and OpenAI — switch at runtime via settings |
+| **Bilingual** | en + pt-br | Every system prompt, crystal, journal entry and tag is language-aware |
+| **RAG** | Dynamic Story Cards | Story cards selected by keyword overlap with recent context instead of dumping everything |
+| **Multi-LLM** | Runtime Switching | DeepSeek V4 (1M ctx), Anthropic Sonnet/Opus 4.6 (1M ctx), OpenAI GPT-5.4 — switch in Settings, no restart |
+| **Persistence** | Survives Restarts | All in-memory state (NPC minds, plot seeds, crystals, inventory) is rebuilt from the event store on every GET |
 
 ---
 
@@ -54,7 +59,7 @@ No HP bars. No mana pools. No grinding. Just **storytelling**.
 - **Python 3.10+**
 - **Node.js 18+**
 - **Docker** (for Neo4j)
-- An LLM API key: **DeepSeek** ([get one](https://platform.deepseek.com/)), **Anthropic**, or **OpenAI**
+- An LLM API key: **DeepSeek** ([get one](https://platform.deepseek.com/)), **Anthropic**, or **OpenAI** — or a Claude Pro/Max subscription via the proxy
 
 ### Install & Run
 
@@ -71,17 +76,15 @@ cd project-lunar
 cp .env.example .env
 # Edit .env → add your API key(s)
 
-# Start Neo4j
+# Start everything (Windows)
+start.bat             # Starts Neo4j, optional proxy, backend, frontend
+
+# Or start manually:
 docker-compose up -d neo4j
-
-# Backend
-cd backend
-source venv/bin/activate   # venv\Scripts\activate on Windows
+cd backend && source venv/bin/activate
 uvicorn app.main:app --reload --port 8000
-
-# Frontend (new terminal)
-cd frontend
-npm run dev
+# in another terminal:
+cd frontend && npm run dev
 ```
 
 Open **http://localhost:5173** and start your adventure.
@@ -98,22 +101,30 @@ OPENAI_API_KEY=sk-...
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=lunar_password
+
+# Optional: Claude Max Proxy (see Proxy section)
+ANTHROPIC_PROXY_URL=http://127.0.0.1:8318
+ANTHROPIC_PROXY_KEY=lunar-proxy-key
+
+# Optional: debug logging
+DEBUG=false
 ```
 
-You can switch between providers at runtime in the Settings panel — no restart needed.
+Switch providers at runtime in the **Settings** panel — no restart needed. Settings are per-campaign and persist across sessions.
 
 ---
 
 ## How to Play
 
-1. **Create a Scenario** — Fill in world details, paste free-form lore (AI extracts entities automatically), set the tone
-2. **Play** — Select a scenario, create a campaign, and dive in
+1. **Create a Scenario** — In the builder, fill in title, language, tone instructions, and **setup questions**. Choose `opening_mode`: a `fixed` written opening, or `ai` to let the engine write one per campaign using the player's setup answers.
+2. **Create a Campaign** — Pick a scenario, answer its setup wizard, optionally toggle combat off. If `opening_mode == ai`, the engine writes a custom cold-open right then.
 3. **Act** — Use the action selector:
    - **DO** — Perform a physical action
-   - **SAY** — Speak in character
+   - **SAY** — Speak in character (text appears verbatim before NPC reactions)
    - **CONTINUE** — Let the story flow
    - **META** — Ask the narrator out-of-character questions about the world state
-4. **Explore** — Open panels for inventory, world map, NPC minds, journal, memory crystals, and plot generation
+4. **Mention NPCs** with `@` autocomplete — names always render as `@Full Name` in narration for consistency.
+5. **Explore** — Open panels for inventory, world map, NPC minds, journal, memory crystals, and plot generation.
 
 ---
 
@@ -121,91 +132,143 @@ You can switch between providers at runtime in the Settings panel — no restart
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Frontend (React)                         │
-│  GameCanvas · ActionInput · Settings · WorldMap · NPC Minds     │
-│  Journal · Inventory · MemoryInspector · PlotGenerator          │
+│                        Frontend (React 19)                      │
+│  GameCanvas · ActionInput · SettingsPanel · WorldMapModal       │
+│  NpcInspector · JournalPanel · InventoryPanel · MemoryInspector │
+│  PlotGeneratorPanel · ScenarioBuilder · SetupWizard             │
 └────────────────────────────┬────────────────────────────────────┘
                              │ SSE / REST
 ┌────────────────────────────▼────────────────────────────────────┐
 │                     FastAPI Backend                             │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │                   GameSession (orchestrator)             │   │
+│  │                GameSession (orchestrator, 2.7k loc)      │   │
 │  │  process_action() → detect_mode → narrate → side effects │   │
-│  └────┬─────┬──────┬──────┬──────┬──────┬──────┬──────┬─────┘   │
-│       │     │      │      │      │      │      │      │         │
-│  Narrator Memory Combat  NPC   Journal Graph  World  Plot       │
-│  Engine  Engine Engine  Minds  Engine  Engine Reactor Generator │
-│       │     │      │      │      │      │      │      │         │
-│  ┌────▼─────▼──────▼──────▼──────▼──────┤      │      │         │
-│  │          LLM Router (litellm)        │      │      │         │
-│  │  DeepSeek · Anthropic · OpenAI       │      │      │         │
-│  └──────────────────────────────────────┘      │      │         │
-│  ┌──────────────────┐  ┌──────────────────┐    │      │         │
-│  │ EventStore (SQL) │  │ ScenarioStore    │    │      │         │
-│  │ Append-only log  │  │ Worlds/Campaigns │    │      │         │
-│  └──────────────────┘  └──────────────────┘    │      │         │
-└────────────────────────────────────────────────┼──────┘─────────┘
-                                                 │
-                                    ┌────────────▼──────────┐
-                                    │   Neo4j (Docker)      │
-                                    │   Knowledge Graph     │
-                                    └───────────────────────┘
+│  └────┬─────┬─────┬─────┬─────┬──────┬─────┬─────┬─────┬────┘   │
+│       │     │     │     │     │      │     │     │     │        │
+│  Narrator Memory Combat NPC  Journal Graph World Plot  Opening  │
+│  Engine  Engine  Engine Mind Engine  Engine Reac. Gen. Gen.     │
+│       │     │     │     │     │      │     │     │     │        │
+│  ┌────▼─────▼─────▼─────▼─────▼──────▼─────▼─────▼─────▼───┐    │
+│  │       LLM Router (litellm) + token forensic dump        │    │
+│  │  DeepSeek V4 · Anthropic Claude 4.6 · OpenAI GPT-5.4    │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│  ┌──────────────────┐  ┌──────────────────┐                     │
+│  │ EventStore (SQL) │  │ ScenarioStore    │                     │
+│  │ Append-only log  │  │ Scenarios +      │                     │
+│  │ events.db        │  │ Campaigns +      │                     │
+│  │                  │  │ StoryCards +     │                     │
+│  │                  │  │ SetupAnswers     │                     │
+│  └──────────────────┘  └──────────────────┘                     │
+└────────────────────────────────────┬────────────────────────────┘
+                                     │
+                          ┌──────────▼──────────┐
+                          │   Neo4j (Docker)    │
+                          │   Knowledge Graph   │
+                          └─────────────────────┘
 ```
 
 ### Engine Breakdown
 
 | Engine | Purpose | Key Behavior |
 |--------|---------|-------------|
-| **NarratorEngine** | Mode detection, prompt building, streaming | Builds multi-section system prompts with context budgeting; single-call mode for Anthropic |
-| **MemoryEngine** | 3-tier memory compression | Auto-crystallizes every 4 actions; structured format (RELATIONSHIPS, PROMISES, KEY_EVENTS, PLAYER_STATE, WORLD_STATE) |
-| **CombatEngine** | Creativity-scored combat | Scores coherence/creativity/context (40/40/20 weight); anti-griefing rejects meta-gaming |
-| **NpcMindEngine** | NPC inner thoughts | Tracks feeling, goal, opinion_of_player, secret_plan per NPC; fuzzy name dedup with LLM confirmation |
-| **JournalEngine** | Auto-event detection | Categories: DISCOVERY, RELATIONSHIP_CHANGE, COMBAT, DECISION, WORLD_EVENT |
-| **GraphEngine** | Neo4j entity graph | Node types: NPC, LOCATION, FACTION, ITEM, EVENT; canonical name resolution for short→full names |
+| **NarratorEngine** | Mode detection, prompt building, streaming | Builds multi-section system prompts; dynamic history window scaled to provider context (200/600 msgs cap on 200k/1M models); JSON single-call mode for cache-enabled providers |
+| **MemoryEngine** | 4-tier crystallization | SHORT (4 actions) → MEDIUM (4 SHORTs) → LONG (4 MEDIUMs) → MEMORY (permanent). Strict name preservation. Witness filter so NPC-specific facts aren't leaked across perspectives |
+| **CombatEngine** | Creativity-scored combat | Scores coherence / creativity / context (40/40/20). Anti-griefing rejects meta-gaming. Dynamic power-level evaluation calibrated against story card NPC anchors |
+| **NpcMindEngine** | NPC inner thoughts | Tracks feeling, goal, opinion_of_player, secret_plan. Fuzzy name dedup with LLM confirmation. Skips dead / merely-mentioned NPCs |
+| **JournalEngine** | Auto-event detection | Categories: DISCOVERY, RELATIONSHIP_CHANGE, COMBAT, DECISION, WORLD_EVENT. Respects scenario language |
+| **GraphEngine** | Neo4j entity graph | Node types: NPC, LOCATION, FACTION, ITEM, EVENT. Canonical name resolution |
 | **WorldReactor** | Off-screen world changes | Tick types scaled by time: MICRO (<1h, no change) → HEAVY (>1 month, wars/deaths) |
-| **PlotGenerator** | Auto-generated story elements | Macro arcs (foreshadowing), micro-hooks (scene details), NPC generation with cooldown timers |
-| **InventoryEngine** | Item lifecycle tracking | States: carried/used/lost; narrative-driven via inline tags parsed from LLM output |
-| **LLMRouter** | Multi-provider abstraction | litellm wrapper with primary/fallback, streaming + completion, max_tokens override |
+| **PlotGenerator** | Auto story elements | Macro arcs, micro-hooks, NPC seeds with cooldown + plot-lock so only one runs at a time |
+| **InventoryEngine** | Item lifecycle | Carried / used / lost, parsed from inline `[ITEM_ADD\|USE\|LOSE]` tags |
+| **OpeningGenerator** | One-shot AI cold-opens | 180-320 word opening per campaign when `opening_mode == ai`, weaving setup answers + tone |
+| **LLMRouter** | Multi-provider abstraction | litellm wrapper with primary/fallback, Anthropic proxy routing, per-call token tracking, optional forensic dump to `logs/llm_calls/*.json` (set `LUNAR_DUMP_LLM_CALLS=1`) |
+
+---
+
+## Scenarios & Setup Wizard
+
+Scenarios are first-class objects with rich authoring features:
+
+```python
+Scenario(
+    id, title, description,
+    tone_instructions,        # Writing style + narrative rules
+    opening_narrative,        # Used when opening_mode == "fixed"
+    language,                 # "en" | "pt-br"
+    lore_text,                # Free-form text — AI extracts NPCs/locations/factions
+    setup_questions = [       # NEW: authored by scenario creators
+        {
+            "var_name": "main_clan",
+            "prompt": "Which clan does {{character_name}} belong to?",
+            "type": "choice",
+            "options": [
+                {"label": "Iron Wolves", "description": "Northern raiders..."},
+                {"label": "Sky Heralds",  "description": "Sun-priests..."},
+            ],
+            "required": True,
+        },
+        {"var_name": "starting_fear", "prompt": "What does your character fear most?", "type": "text"},
+    ],
+    opening_mode = "ai",      # "fixed" or "ai"
+    ai_opening_directive = "Open in medias res, mid-conversation. End on a choice.",
+)
+```
+
+Setup answers are persisted per campaign, interpolated into tone/lore/opening with `{{var_name}}` syntax, and rendered as a `CHARACTER SETUP` block in every system prompt so the LLM always knows who the player is.
+
+**Story Cards** — NPCs, locations, factions, items, lore fragments — are stored separately and selected dynamically per turn by keyword overlap with recent context (RAG), instead of dumping the entire library every action.
 
 ---
 
 ## Memory System
 
-Project Lunar uses a 3-tier memory architecture so the AI never forgets, even in long sessions:
+Project Lunar uses a **4-tier crystal pyramid** so the AI never forgets, even in 200+ action campaigns:
 
 ```
-Action 1─4: [raw events in context]
-                ↓ auto-crystallize (every 4 actions)
-Action 5─8: [crystal of 1-4] + [raw events 5-8]
-                ↓
-Action 9+:  [crystal of 1-8] + [raw events 9-12]
-                ↓
-Action 50:  [long crystal: actions 1-35] + [short crystal: 36-45] + [raw: 46-50]
+Action  1- 4: [SHORT_1: actions 1-4]
+Action  5- 8: [SHORT_2: actions 5-8]
+Action  9-12: [SHORT_3: actions 9-12]
+Action 13-16: [SHORT_4: actions 13-16] → consolidate → MEDIUM_1 (actions 1-16)
+…
+4 MEDIUMs   → LONG    (~64 actions, one full story arc)
+4 LONGs     → MEMORY  (permanent canonical world facts)
 ```
 
-**What the LLM sees at action 50:**
-- Crystallized summary of actions 1-35 (compressed to structured format)
-- Recent crystal of actions 36-45
-- Last 10 raw events (uncompressed)
-- Last 30 conversation messages (full text)
-- Current NPC states (thoughts of all active NPCs)
-- Last 8 journal entries
-- Neo4j graph relationships
+**What the LLM sees at action 100 on a 1M-context model:**
+- A few MEMORY-tier crystals (permanent identity, completed arcs, world facts)
+- The current LONG crystal (active arc summary)
+- All MEDIUM crystals between the active LONG and now
+- All unconsolidated SHORTs
+- Up to 600 raw conversation messages (200 on 200k models)
+- Current NPC thoughts, latest journal entries, RAG-selected story cards
+- Neo4j relationship snapshot
 
-**Crystallization format:**
+**Crystal schema (structured JSON, not freeform text):**
+
+```json
+{
+  "ai": {
+    "events":   [{"who": "...", "action": "...", "where": "...", "result": "..."}],
+    "characters": { "<Name>": {"description": "...", "state": "...", "relationship_to_player": "..."} },
+    "items":    [{"name": "...", "owner": "...", "status": "acquired|used|lost"}],
+    "promises_or_missions": ["<verbatim text>"],
+    "world_facts": ["<lasting facts>"]
+  },
+  "summary": "<short player-facing text>"
+}
 ```
-RELATIONSHIPS: [who met who and what they discussed]
-PROMISES: [agreements, pacts, deals]
-KEY_EVENTS: [major plot points in chronological order]
-PLAYER_STATE: [emotional state, goals, grudges]
-WORLD_STATE: [faction standings, location changes, threats]
-```
+
+**Integrity rules enforced at every tier**: proper names are preserved exactly (no substituting "Lena" with "Lana" or similar canonical names from pop fiction), physical descriptions are kept verbatim, open promises survive consolidation until explicitly resolved.
+
+**Witness filter**: each crystal tracks which NPCs witnessed its source events; NPC-specific facts won't leak to characters who weren't there. MEMORY tier is global canon and ignores this filter.
 
 ---
 
 ## Combat System
 
-Project Lunar uses a **creativity-based combat system** — no HP, mana, or levels.
+Project Lunar uses a **creativity-based combat system** — no HP, mana, or levels — with an optional **dynamic power scale**.
+
+### Action scoring
 
 Every action is evaluated on three axes:
 
@@ -215,14 +278,22 @@ Every action is evaluated on three axes:
 | **Creativity** | 40% | Is it original and unexpected? |
 | **Context** | 20% | Does it use the environment and narrative? |
 
-| Outcome | Probability | Effect |
-|---------|------------|--------|
+| Outcome | Trigger | Effect |
+|---------|---------|--------|
 | Critical Success | High quality + luck | Spectacular success + 1 free action |
 | Success | quality × 0.65 + (1-difficulty) × 0.35 | Action succeeds as intended |
-| Fail | Below threshold | Action fails, story continues |
+| Fail | Below threshold | Action fails (enforced — the narrator cannot ignore the dice roll) |
 | Critical Fail | Low quality + bad luck | Action backfires — NPC gains +2 actions |
 
 Anti-griefing rejects meta-gaming ("I kill everyone instantly") and physically impossible actions.
+
+### Power-level evaluation
+
+When combat starts, the engine asks the LLM to rate the opponent's power 1–10. If the scenario provides a **WORLD POWER SCALE** (built from story card NPCs as anchors — top 25 + bottom 25), the model calibrates the opponent relative to that scale. Player power is evaluated the same way and persisted. This makes combat consistent across scenarios — a "tier-1 swordsman" stays tier-1 whether the world is shōnen, sword-and-sorcery, or post-apocalyptic.
+
+### Per-campaign toggle
+
+Each campaign has a `combat_enabled` flag. Disable it for purely narrative campaigns; the mode detector will never route to COMBAT mode and the system prompt skips all combat rules.
 
 ---
 
@@ -230,98 +301,30 @@ Anti-griefing rejects meta-gaming ("I kill everyone instantly") and physically i
 
 Project Lunar supports multiple LLM providers via [litellm](https://github.com/BerriAI/litellm). Switch providers at runtime in the Settings panel.
 
-| Provider | Models | Context | Pipeline | Cost |
-|----------|--------|---------|----------|------|
-| **DeepSeek** | deepseek-v4-flash, deepseek-v4-pro | 1M | Streaming + multi-call (5-6 LLM calls/action) | ~$0.002/action |
-| **Anthropic** | claude-sonnet-4-6, claude-opus-4-6 | 1M | Single-call + prompt caching (1 LLM call/action) | ~$0.07/action |
-| **OpenAI** | gpt-4o, gpt-4o-mini | 128K | Streaming + multi-call | ~$0.01/action |
+| Provider | Models | Context | Notes |
+|----------|--------|---------|-------|
+| **DeepSeek** | deepseek-v4-flash, deepseek-v4-pro | 1M | Streaming, lowest cost/quality ratio |
+| **Anthropic** | claude-sonnet-4-6, claude-opus-4-6 | 1M | Single-call mode + prompt caching |
+| **Anthropic** | claude-haiku-4-5, claude-sonnet-4-5, claude-opus-4-5 | 200K | Via API key or Max proxy |
+| **OpenAI** | gpt-5.4, gpt-5.4-mini, gpt-5.4-nano | 1M / 400K | Streaming |
+| **OpenAI (legacy)** | gpt-4o, gpt-4o-mini, gpt-4-turbo | 128K | Not recommended |
 
-### Provider Quality Comparison
+The **context window is detected automatically** per model and used to size the history slice, RAG selection, and crystal injection budget. There are no hardcoded character caps — the project targets full utilization of the model's context.
 
-After extensive playtesting (35+ actions per provider across multiple scenarios), here's how each provider performs as a storytelling engine:
+### Provider Quality (qualitative, from extended playtesting)
 
-#### DeepSeek — Best Value 🏆
+**DeepSeek — Best Value 🏆**
+Light-novel prose, vivid emotions, strong scenario adherence. Recent cost optimization cut DeepSeek per-action cost by ~87%. Best daily driver for long campaigns.
 
-**Narrative style:** Light novel — vivid, emotional, cinematic.
+**Anthropic (Claude) — Best Quality 👑**
+Literary fiction. Deepest character work, layered subtext, best instruction adherence. Single-call mode + prompt caching keeps long sessions affordable on Sonnet. Use via API key or the Claude Max Proxy below.
 
-DeepSeek delivers surprisingly rich storytelling at a fraction of the cost. Characters have well-defined emotions, combat scenes are dynamic and creative, and the AI consistently respects scenario rules and player technique limitations. It introduces original plot elements (items, locations, backstory reveals) that feel earned rather than random. At ~$0.002/action, it's absurdly cost-effective — you can play hundreds of actions for pennies.
+**OpenAI (GPT) — Not Recommended ⚠️**
+Looks good in short sessions but degrades over time, falling into repetitive narrative patterns and ignoring custom narrator rules.
 
-**Strengths:** Creative NPC dialogue, emotionally resonant moments, excellent technique/power consistency, emergent narrative details (e.g., inventing meaningful items tied to backstory).
+### Temperature
 
-**Weaknesses:** Occasionally verbose. Slightly less character depth compared to Anthropic. Takes some creative liberties with player dialogue.
-
-#### Anthropic (Claude) — Best Quality 👑
-
-**Narrative style:** Literary fiction — a true novelist narrating your adventure.
-
-Any Claude model (even Sonnet) produces writing that is genuinely beautiful. Characters have significantly deeper psychological profiles — their motivations feel layered, their dialogue has subtext, and emotional beats hit harder. The AI builds tension masterfully and makes every choice feel consequential. Sonnet specifically offers the best speed-to-quality ratio in the market.
-
-**Strengths:** Deepest character work, most emotionally impactful writing, best instruction adherence, nuanced moral dilemmas, subtlety in foreshadowing.
-
-**Weaknesses:** Expensive (~$0.07/action). Even with single-call mode and prompt caching, long sessions add up fast.
-
-#### OpenAI (GPT) — Not Recommended ⚠️
-
-**Narrative style:** Technical manual pretending to be a novel.
-
-OpenAI models produce text that *looks* good at first glance but breaks down over extended play. Characters feel mechanized — they say the right words but lack literary depth. The AI tends to fall into repetitive narrative patterns (same sentence structures, same dramatic beats) and progressively ignores narrator instructions, defaulting to its own generic storytelling style. Still more expensive than DeepSeek with significantly worse results.
-
-**Strengths:** Fast response times. Adequate for short sessions or testing.
-
-**Weaknesses:** Repetitive narrative style, poor long-term instruction adherence, characters lack personality depth, formulaic combat descriptions, higher cost than DeepSeek for lower quality.
-
-#### TL;DR
-
-| | DeepSeek | Anthropic | OpenAI |
-|---|---------|-----------|--------|
-| **Quality** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐ |
-| **Cost/action** | ~$0.002 | ~$0.07 | ~$0.01 |
-| **Character depth** | Good | Exceptional | Shallow |
-| **Instruction adherence** | Good | Excellent | Poor over time |
-| **Recommended for** | Daily play, long campaigns | Special moments, premium experience | Testing only |
-
-### Temperature Guide (Tested with DeepSeek)
-
-The default temperature is **0.85** — optimized for narrative RPG through extensive A/B testing across 40+ actions.
-
-| Temperature | Prose Quality | Creativity | Hallucination Risk | Best For |
-|-------------|--------------|------------|-------------------|----------|
-| **0.50–0.65** | Dry, functional | Low, predictable | None | Debug, testing |
-| **0.70** | Clear, analytical | Good but repetitive | None | Exposition-heavy scenarios, tutorials |
-| **0.85** ⭐ | **Poetic, literary** | **Excellent — thematic insights, original metaphors** | **None** | **Default — best balance for narrative RPG** |
-| **1.00** | Rich, verbose | High — inventive but sometimes unfocused | Minimal | Creative-first scenarios, surreal/dream sequences |
-| **1.15+** | Unpredictable | Very high | Moderate — may contradict established facts | Experimental only |
-
-**Why 0.85?**
-
-At 0.85, DeepSeek produces prose that reads like literary fiction rather than generated text. In testing, this temperature:
-- Generated original thematic insights (e.g., contrasting a dead sister's "light of hope" with the player's "light of violence" — both from the same bloodline)
-- Reused earlier narrative details in new emotional contexts without being prompted
-- Created vivid sensory memories (floating light spheres described as "controlled fireflies")
-- Maintained perfect factual consistency across 40+ actions — zero hallucination of past events
-- Produced varied vocabulary and sentence structures without becoming incoherent
-
-At 0.70, the same prompts produced competent but predictable, exposition-heavy responses. At 1.00, creativity increased but prose occasionally became unfocused or verbose. 0.85 hits the sweet spot where every response feels like it was written by a human author who genuinely cares about the story.
-
-> **Note:** These results are specific to DeepSeek (deepseek-v4-flash). Anthropic models produce excellent results across a wider temperature range (0.7–1.0) due to stronger instruction adherence. OpenAI models tend to degrade above 0.9.
-
----
-
-## Auto-Plot System
-
-The engine automatically generates story elements on dynamic cooldowns:
-
-| Type | Min Turns | Min Time | Cooldown | Max per Campaign |
-|------|-----------|----------|----------|-----------------|
-| **Micro-Hook** | 3 | 15 min | 4 turns | 12 |
-| **NPC Generation** | 5 | 30 min | 6 turns | 8 |
-| **Plot Arc** | 8 | 2 hours | 9 turns | 6 |
-
-- **Micro-hooks**: Scene details woven into the next narration (mysterious object, NPC behaving oddly)
-- **NPC Generation**: New characters with name, personality, power level, secret, goal, appearance
-- **Plot Arcs**: High-level story seeds for the narrator to foreshadow subtly
-
-A **plot lock** ensures only one active element at a time — new elements wait until the current one is consumed (after 4+ turns of development).
+Default is **1.5** — empirically the sweet spot for DeepSeek narrative work. Anthropic tolerates 0.9–1.0 well; OpenAI degrades above 0.9. Tunable per session in Settings.
 
 ---
 
@@ -331,61 +334,63 @@ A **plot lock** ensures only one active element at a time — new elements wait 
 project-lunar/
 ├── backend/
 │   └── app/
-│       ├── api/               # FastAPI routes
-│       │   ├── routes_game.py     # Game actions, SSE streaming, state queries
-│       │   └── routes_scenarios.py # Scenario CRUD, import/export
-│       ├── db/                # Persistence
-│       │   ├── event_store.py     # Append-only event log (SQLite)
-│       │   └── scenario_store.py  # Scenarios, campaigns, story cards
-│       ├── engines/           # Core systems
-│       │   ├── narrator_engine.py     # Mode detection, prompts, streaming, single-call
-│       │   ├── memory_engine.py       # 3-tier crystallization
-│       │   ├── combat_engine.py       # Creativity-based combat + anti-griefing
-│       │   ├── npc_mind_engine.py     # NPC thoughts + fuzzy dedup
-│       │   ├── journal_engine.py      # Auto-event detection
-│       │   ├── graph_engine.py        # Neo4j knowledge graph
-│       │   ├── world_reactor.py       # Off-screen world evolution
-│       │   ├── plot_generator.py      # Auto-plot (arcs, hooks, NPCs)
-│       │   ├── inventory_engine.py    # Item lifecycle
-│       │   ├── llm_router.py          # Multi-provider LLM abstraction
-│       │   └── graphiti_engine.py     # Temporal knowledge graph
+│       ├── api/
+│       │   ├── routes_game.py        # 23 endpoints: action, state, memory, journal, etc.
+│       │   └── routes_scenarios.py   # CRUD + import/export + preview-opening
+│       ├── db/
+│       │   ├── event_store.py        # Append-only event log (SQLite)
+│       │   └── scenario_store.py     # Scenarios, story cards, campaigns, setup answers
+│       ├── engines/
+│       │   ├── narrator_engine.py        # Mode detection, prompts, streaming, single-call
+│       │   ├── memory_engine.py          # 4-tier crystallization (1k loc)
+│       │   ├── combat_engine.py          # Creativity scoring + power levels
+│       │   ├── npc_mind_engine.py        # NPC thoughts + fuzzy dedup
+│       │   ├── journal_engine.py         # Auto-event detection
+│       │   ├── graph_engine.py           # Neo4j knowledge graph
+│       │   ├── graphiti_engine.py        # Temporal knowledge graph (experimental)
+│       │   ├── world_reactor.py          # Off-screen world evolution
+│       │   ├── plot_generator.py         # Auto-plot (arcs, hooks, NPCs)
+│       │   ├── inventory_engine.py       # Item lifecycle
+│       │   ├── opening_generator.py      # AI cold-open writer
+│       │   └── llm_router.py             # Multi-provider router + token tracker
 │       ├── services/
-│       │   ├── game_session.py        # Main orchestrator (1000+ lines)
-│       │   └── scenario_service.py    # Scenario management
-│       ├── utils/
-│       │   └── json_parsing.py        # Robust JSON extraction from LLM output
-│       ├── config.py              # Pydantic settings + .env
-│       └── main.py                # FastAPI entry point
+│       │   ├── game_session.py           # Main orchestrator (2.7k loc)
+│       │   ├── scenario_service.py       # Scenario management
+│       │   └── scenario_interpolation.py # {{var}} substitution
+│       ├── utils/                  # JSON parsing helpers
+│       ├── config.py               # Pydantic settings + .env
+│       └── main.py                 # FastAPI entry point + /api/settings
 ├── frontend/
 │   └── src/
 │       ├── components/
-│       │   ├── GameCanvas.jsx         # Main gameplay UI + SSE handler
-│       │   ├── ActionInput.jsx        # DO/SAY/CONTINUE/META input
-│       │   ├── CombatOverlay.jsx      # Combat mode UI
-│       │   ├── SettingsPanel.jsx      # LLM provider/model/temperature config
-│       │   ├── InventoryPanel.jsx     # Item display
-│       │   ├── JournalPanel.jsx       # Event log by category
-│       │   ├── WorldMapModal.jsx      # Force-graph Neo4j visualization
-│       │   ├── MemoryInspector.jsx    # Crystal viewer
-│       │   ├── NpcInspector.jsx       # NPC thought browser
-│       │   ├── PlotGeneratorPanel.jsx # On-demand generation
-│       │   ├── TimeskipModal.jsx      # Time advancement
-│       │   └── ScenarioBuilder.jsx    # World creation with lore extraction
-│       ├── store.js               # Zustand state management
-│       ├── api.js                 # REST + SSE API helpers
-│       └── App.jsx                # Routes (/, /create, /play)
+│       │   ├── GameCanvas.jsx           # Main gameplay UI + SSE handler
+│       │   ├── ActionInput.jsx          # DO/SAY/CONTINUE/META + @-mention autocomplete
+│       │   ├── CombatOverlay.jsx        # Combat mode UI
+│       │   ├── SettingsPanel.jsx        # Provider/model/temperature/max_tokens
+│       │   ├── InventoryPanel.jsx
+│       │   ├── JournalPanel.jsx
+│       │   ├── WorldMapModal.jsx        # Force-graph Neo4j visualization
+│       │   ├── MemoryInspector.jsx      # Crystal viewer (all 4 tiers)
+│       │   ├── NpcInspector.jsx         # NPC thought browser
+│       │   ├── PlotGeneratorPanel.jsx   # On-demand generation
+│       │   ├── TimeskipModal.jsx        # Manual time advancement
+│       │   ├── ScenarioBuilder.jsx      # World creation + lore extraction
+│       │   ├── SetupWizard.jsx          # Pre-game question flow
+│       │   └── ErrorBoundary.jsx
+│       ├── lib/                      # interpolate helper, etc.
+│       ├── store.js                  # Zustand state management
+│       ├── api.js                    # REST + SSE API helpers
+│       └── App.jsx                   # Routes (/, /create, /play)
 ├── proxy/
-│   ├── cliproxyapi/           # CLIProxyAPI (Go binary, recommended)
-│   │   ├── config.yaml            # Proxy config (port, API key)
-│   │   └── cli-proxy-api.exe      # Binary (downloaded, .gitignored)
-│   ├── auth.py                # Legacy OAuth PKCE auth (Haiku only)
-│   ├── server.py              # Legacy FastAPI proxy
-│   ├── config.py              # Legacy proxy config
-│   ├── run.py                 # Legacy proxy CLI
-│   └── README.md              # Proxy documentation
-├── docker-compose.yml         # Neo4j container
-├── .env.example               # Environment template
-└── install.sh                 # One-command setup
+│   ├── cliproxyapi/                # CLIProxyAPI (Go binary, recommended)
+│   │   ├── config.yaml                # Proxy config (port 8318, API key)
+│   │   └── cli-proxy-api.exe          # Binary (downloaded, .gitignored)
+│   ├── auth.py / server.py / run.py # Legacy OAuth proxy (Haiku-only)
+│   └── README.md                   # Proxy documentation
+├── docker-compose.yml              # Neo4j container
+├── .env.example
+├── install.sh / install.bat        # One-command setup
+└── start.bat                       # Windows: brings up Neo4j + proxy + backend + frontend
 ```
 
 ---
@@ -394,73 +399,81 @@ project-lunar/
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 19 · Vite · Zustand · Tailwind CSS · Framer Motion |
-| Backend | Python 3.10+ · FastAPI · SQLite (event sourcing) |
-| Knowledge Graph | Neo4j (Docker) · Graphiti-core (temporal) |
-| LLM | litellm (DeepSeek · Anthropic · OpenAI) |
-| Visualization | react-force-graph-2d · React Markdown · Lucide icons |
-
----
-
-## Running Tests
-
-```bash
-cd backend
-source venv/bin/activate
-pytest tests/ -v --cov=app --cov-report=term-missing
-```
-
-143 tests covering all engines, services, and API routes.
+| Frontend | React 19 · Vite 7 · Zustand 5 · Tailwind 3 · Framer Motion · react-force-graph-2d · react-markdown · Lucide |
+| Backend | Python 3.10+ · FastAPI · pydantic-settings · SQLite (event sourcing) |
+| Knowledge Graph | Neo4j 5 (Docker) · Graphiti-core (temporal, experimental) |
+| LLM | litellm (DeepSeek · Anthropic · OpenAI) · instructor · tiktoken |
+| Bilingual | Native en + pt-br across every prompt, crystal, and tag |
 
 ---
 
 ## API Reference
 
-### Game Endpoints
+All endpoints are versioned under `/api/`. Game endpoints are scoped to a campaign.
+
+### Game (`/api/game`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/game/action` | Stream game action (SSE) |
-| POST | `/api/game/rewind` | Undo last action |
-| POST | `/api/game/timeskip` | Advance narrative time |
-| GET | `/api/game/{id}/state` | Current session state |
-| GET | `/api/game/{id}/memory` | Memory crystals |
-| GET | `/api/game/{id}/journal` | Journal entries |
-| GET | `/api/game/{id}/inventory` | Player inventory |
-| GET | `/api/game/{id}/npc-minds` | All NPC states |
-| GET | `/api/game/{id}/world-graph` | Neo4j graph data |
-| POST | `/api/game/generate` | Generate NPC/event/plot |
-| POST | `/api/game/search` | Search knowledge graph |
+| POST | `/action` | Stream a player action (SSE) |
+| GET | `/{campaign_id}/scenario-view` | Resolved scenario tone + lore + opening (after interpolation) |
+| GET | `/{campaign_id}/setup-state` | Setup questions + saved answers |
+| POST | `/{campaign_id}/setup-answers` | Save player's setup wizard answers |
+| POST | `/{campaign_id}/regenerate-opening` | Re-roll the AI cold-open |
+| PATCH | `/{campaign_id}/settings` | Toggle `combat_enabled`, etc. |
+| GET | `/{campaign_id}/history` | Full conversation log |
+| POST | `/{campaign_id}/rewind` | Undo last action |
+| POST | `/{campaign_id}/timeskip` | Advance narrative time manually |
+| GET | `/{campaign_id}/journal` | Journal entries |
+| GET | `/{campaign_id}/npc-minds` | All NPC inner-thought states |
+| PUT/DELETE | `/{campaign_id}/npc-minds/{name}` | Edit / delete an NPC mind |
+| GET | `/{campaign_id}/characters` | Player + NPC roster |
+| GET | `/{campaign_id}/memory-crystals` | All 4-tier crystals |
+| POST | `/{campaign_id}/crystallize` | Manually trigger consolidation |
+| POST | `/{campaign_id}/generate` | Generate NPC / event / plot on demand |
+| POST | `/{campaign_id}/inject-npc-seed` | Pre-seed an NPC for the next scene |
+| GET | `/{campaign_id}/inventory` | Player inventory |
+| POST | `/{campaign_id}/inventory` | Manual item add/remove |
+| GET | `/{campaign_id}/graph-search?q=...` | Search the Neo4j graph |
+| GET | `/{campaign_id}/world-graph` | Graph snapshot for the map |
 
-### Scenario Endpoints
+### Scenarios (`/api/scenarios`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/scenarios` | List all scenarios |
-| POST | `/api/scenarios` | Create scenario |
-| POST | `/api/scenarios/import` | Import from JSON |
-| POST | `/api/scenarios/{id}/export` | Export as JSON |
-| POST | `/api/scenarios/{id}/campaigns` | Create campaign |
-| DELETE | `/api/scenarios/{id}` | Delete scenario |
+| GET | `/` | List all scenarios |
+| POST | `/` | Create scenario |
+| POST | `/preview-opening` | Test an AI opening without saving |
+| POST | `/import` | Import from JSON |
+| GET | `/{id}` | Fetch scenario |
+| GET | `/{id}/export` | Export as JSON |
+| POST | `/{id}/story-cards` | Add NPC/Location/Faction/Item/Lore card |
+| GET | `/{id}/story-cards` | List cards |
+| POST | `/{id}/campaigns` | Create campaign |
+| GET | `/{id}/campaigns` | List campaigns |
+| DELETE | `/{id}/campaigns/{campaign_id}` | Delete campaign |
+| DELETE | `/{id}` | Delete scenario |
 
-### Settings
+### Settings & Health
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/settings` | Current LLM config |
-| POST | `/api/settings` | Update provider/model/temperature/max_tokens |
+| GET | `/api/settings` | Current global LLM config |
+| POST | `/api/settings` | Update provider / model / temperature / max_tokens |
+| GET | `/api/health` | Liveness probe |
+| GET | `/api/health/neo4j` | Neo4j connectivity check |
 
 ---
 
 ## Claude Max Proxy (Optional)
 
-If you have a Claude Pro/Max subscription ($20/$100/month), you can route API calls through your subscription instead of paying per-token. This gives access to **all Claude models** (Sonnet 4.6, Opus 4.6, etc.) at no extra API cost.
+If you have a Claude Pro/Max subscription, you can route Anthropic API calls through your subscription instead of paying per-token. This gives access to **all Claude models** (Sonnet 4.6, Opus 4.6, Haiku 4.5, etc.) at no extra API cost.
 
 ### How it works
 
-The proxy uses [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), a Go binary that wraps the Claude Code OAuth flow into an Anthropic-compatible API server. It authenticates with your Claude subscription and exposes a local `/v1/messages` endpoint. The backend's `LLMRouter` detects the `ANTHROPIC_PROXY_URL` env var and routes all Anthropic calls through it automatically.
+The proxy uses [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), a Go binary that wraps the Claude Code OAuth flow into an Anthropic-compatible API server. It authenticates with your Claude subscription and exposes a local `/v1/messages` endpoint. The backend's `LLMRouter` detects `ANTHROPIC_PROXY_URL` in `.env` and routes all Anthropic calls through it automatically — including the streaming-disabled fallback path required because CLIProxyAPI's SSE format isn't compatible with litellm's parser.
 
-> **Note:** CLIProxyAPI is a pre-compiled Go binary (not built from source in this repo) because it handles the OAuth flow, token refresh, and Claude Code protocol translation — functionality that would be complex to reimplement. The binary is `.gitignore`d; you download it during setup.
+> CLIProxyAPI is a pre-compiled Go binary (not built from source here) because it handles the OAuth flow, token refresh, and Claude Code protocol translation. The binary is `.gitignore`d; you download it during setup.
 
 ### Setup
 
@@ -468,36 +481,40 @@ The proxy uses [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), a Go
 # 1. Download CLIProxyAPI (one-time)
 cd proxy/cliproxyapi
 # Download from: https://github.com/router-for-me/CLIProxyAPI/releases/latest
-# Extract cli-proxy-api.exe (or cli-proxy-api for Linux/macOS) into this folder
+# Extract cli-proxy-api.exe (Windows) or cli-proxy-api (Linux/macOS) into this folder
 
-# 2. Authenticate with your Claude account (opens browser)
+# 2. Authenticate (opens browser → Claude login)
 ./cli-proxy-api.exe -claude-login -config config.yaml
 
 # 3. Start the proxy
 ./cli-proxy-api.exe -config config.yaml
-# Proxy runs on http://127.0.0.1:8317
+# Proxy runs on http://127.0.0.1:8318 (configured in config.yaml)
 ```
+
+On Windows, `start.bat` will auto-start the proxy if `cli-proxy-api.exe` is present in `proxy/cliproxyapi/`.
 
 ### Configure .env
 
 ```env
-ANTHROPIC_PROXY_URL=http://127.0.0.1:8317
+ANTHROPIC_PROXY_URL=http://127.0.0.1:8318
 ANTHROPIC_PROXY_KEY=lunar-proxy-key
 ```
 
-Then select any Anthropic model in the Settings panel — Sonnet 4.6, Opus 4.6, Haiku 4.5, etc. — and play.
+Then select any Anthropic model in the Settings panel and play.
 
-### Available models via proxy
+### Reliability
 
-| Model | Context | Via Proxy |
-|-------|---------|-----------|
-| claude-sonnet-4-6 | 1M | Yes |
-| claude-opus-4-6 | 1M | Yes |
-| claude-sonnet-4-5-20250929 | 200K | Yes |
-| claude-opus-4-5-20251101 | 200K | Yes |
-| claude-haiku-4-5-20251001 | 200K | Yes |
+The router retries transient proxy failures (0.5s + 1.5s backoff, 3 total attempts) so a single hiccup never leaks the English fallback string into a non-English campaign.
 
-> See [`proxy/README.md`](proxy/README.md) for detailed setup, troubleshooting, and the legacy OAuth proxy documentation.
+See [`proxy/README.md`](proxy/README.md) for detailed setup, troubleshooting, and legacy OAuth proxy docs.
+
+---
+
+## Debugging & Cost Investigation
+
+Set `LUNAR_DUMP_LLM_CALLS=1` to dump every LLM call to `logs/llm_calls/<utc-ts>_<id>_<caller>.json` — full request (messages, model, max_tokens) + response + timing + token counts. Useful for tracking down cache hit rates, runaway prompts, or reproducing prod calls offline.
+
+`DEBUG=true` in `.env` enables verbose backend logging including the entire system prompt, history slice and response body for every action.
 
 ---
 
@@ -507,9 +524,10 @@ Contributions are welcome! This is an open-source project built for the communit
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feat/amazing-feature`)
-3. Write tests for your changes
-4. Run `pytest tests/ -v` to verify
-5. Open a Pull Request
+3. Make your changes
+4. Open a Pull Request
+
+**Project Lunar is a scenario engine, not a game.** Avoid hardcoding world-specific logic (genre keywords, tier systems, named characters). All solutions should be scenario-agnostic — derive context from story cards, tone instructions, and lore that the user defined.
 
 ---
 
