@@ -1,99 +1,86 @@
 #!/bin/bash
 set -e
 
-VERSION=${VERSION:-latest}
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
+echo "=== Project Lunar - Local Setup ==="
+echo
 
-case "$ARCH" in
-x86_64) ARCH="amd64" ;;
-arm64|aarch64) ARCH="arm64" ;;
-*) echo "unsupported architecture: $ARCH" && exit 1 ;;
-esac
+# --- Prerequisite checks ---
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: Docker not found."
+  echo "Please install from https://www.docker.com/products/docker-desktop/"
+  exit 1
+fi
 
-# set install dir
-if [ "$(id -u)" -ne 0 ] && [ -z "$INSTALL_DIR" ]; then
-INSTALL_DIR="$HOME/.local/bin"
-mkdir -p "$INSTALL_DIR"
-
-PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
-add_path() { [ -f "$1" ] && grep -q '\.local/bin' "$1" || echo "$PATH_LINE" >> "$1"; }
-if [ "$OS" = "darwin" ]; then
-add_path "$HOME/.zshrc"
-add_path "$HOME/.bash_profile"
+# Resolve docker compose command (v2 plugin vs legacy binary)
+if docker compose version >/dev/null 2>&1; then
+  DOCKER_COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DOCKER_COMPOSE="docker-compose"
 else
-add_path "$HOME/.bashrc"
+  echo "ERROR: docker compose not found."
+  echo "Please install Docker Desktop or the docker compose plugin."
+  exit 1
 fi
 
-export PATH="$INSTALL_DIR:$PATH"
+# Resolve Python command (prefer python3, common on macOS/Linux)
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON="python"
 else
-INSTALL_DIR=${INSTALL_DIR:-/usr/local/bin}
+  echo "ERROR: Python not found. Install from https://www.python.org/downloads/"
+  exit 1
 fi
 
-# resolve download url
-if [ "$VERSION" = "latest" ]; then
-URL=$(curl -fsSL https://dist.inference.sh/cli/manifest.json | grep -o "\"$OS-$ARCH\":{[^}]*}" | grep -o 'https[^"]*')
+if ! command -v node >/dev/null 2>&1; then
+  echo "ERROR: Node.js not found. Install from https://nodejs.org/"
+  exit 1
+fi
+
+echo "[1/5] Starting Neo4j via Docker..."
+$DOCKER_COMPOSE up -d neo4j
+echo "      Waiting for Neo4j to start..."
+sleep 15
+
+echo "[2/5] Setting up Python virtual environment..."
+cd backend
+$PYTHON -m venv venv
+# shellcheck disable=SC1091
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+deactivate
+cd ..
+
+echo "[3/5] Copying environment file..."
+if [ ! -f .env ]; then
+  cp .env.example .env
+  echo "      Created .env - please add your API keys!"
 else
-URL="https://dist.inference.sh/cli/inferencesh-cli-${VERSION}-${OS}-${ARCH}.tar.gz"
+  echo "      .env already exists, skipping."
 fi
 
-NAME=$(basename "$URL" .tar.gz)
-TARBALL_NAME=$(basename "$URL")
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+echo "[4/5] Installing frontend dependencies..."
+cd frontend
+npm install
+cd ..
 
-echo "downloading cli $VERSION for $OS-$ARCH..."
-curl -fsSL "$URL" -o "$TMP/$TARBALL_NAME"
-
-# verify checksum
-echo "verifying checksum..."
-curl -fsSL https://dist.inference.sh/cli/checksums.txt -o "$TMP/checksums.txt"
-EXPECTED=$(grep "$TARBALL_NAME" "$TMP/checksums.txt" | awk '{print $1}')
-if [ -z "$EXPECTED" ]; then
-echo "warning: no checksum found for $TARBALL_NAME, skipping verification"
-else
-if command -v sha256sum >/dev/null 2>&1; then
-ACTUAL=$(sha256sum "$TMP/$TARBALL_NAME" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-ACTUAL=$(shasum -a 256 "$TMP/$TARBALL_NAME" | awk '{print $1}')
-else
-echo "warning: no sha256sum or shasum found, skipping verification"
-ACTUAL="$EXPECTED"
-fi
-if [ "$ACTUAL" != "$EXPECTED" ]; then
-echo "error: checksum mismatch!"
-echo " expected: $EXPECTED"
-echo " got: $ACTUAL"
-echo "the download may be corrupted or tampered with."
-exit 1
-fi
-echo "checksum verified."
-fi
-
-# verify cosign signature on checksums (optional)
-COSIGN_IDENTITY="${COSIGN_IDENTITY:-omerkarisman@gmail.com}"
-COSIGN_OIDC_ISSUER="${COSIGN_OIDC_ISSUER:-https://github.com/login/oauth}"
-DIST_BASE="https://dist.inference.sh/cli"
-
-if command -v cosign >/dev/null 2>&1; then
-echo "verifying signature..."
-BUNDLE="$TMP/checksums.txt.bundle"
-curl -fsSL "$DIST_BASE/checksums.txt.bundle" -o "$BUNDLE" 2>/dev/null && \
-cosign verify-blob "$TMP/checksums.txt" \
---bundle "$BUNDLE" \
---certificate-identity="$COSIGN_IDENTITY" \
---certificate-oidc-issuer="$COSIGN_OIDC_ISSUER" && \
-echo "signature verified." || \
-echo "warning: signature verification failed, continuing with checksum-only."
-fi
-
-tar -xzf "$TMP/$TARBALL_NAME" -C "$TMP"
-BIN="$TMP/$NAME"
-
-chmod +x "$BIN"
-rm -f "$INSTALL_DIR/inferencesh" "$INSTALL_DIR/infsh"
-mv "$BIN" "$INSTALL_DIR/inferencesh"
-ln -sf "$INSTALL_DIR/inferencesh" "$INSTALL_DIR/infsh"
-
-echo "installed to $INSTALL_DIR"
-echo "run 'inferencesh' or 'infsh'"
+echo
+echo "[5/5] Setup complete!"
+echo
+echo "========================================"
+echo " To start Project Lunar:"
+echo
+echo " Backend:"
+echo "   cd backend"
+echo "   source venv/bin/activate"
+echo "   uvicorn app.main:app --reload --port 8000"
+echo
+echo " Frontend (new terminal):"
+echo "   cd frontend"
+echo "   npm run dev"
+echo
+echo " Neo4j Browser: http://localhost:7474"
+echo " App:           http://localhost:5173"
+echo "========================================"
+echo
