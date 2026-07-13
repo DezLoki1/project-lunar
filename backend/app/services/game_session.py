@@ -52,6 +52,26 @@ def _prompt_cache_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _narrator_audit_enabled() -> bool:
+    """FASE 3b flag (default ON); LUNAR_FEATURE_NARRATOR_AUDIT=0 disables the post-hoc auditor."""
+    raw = os.environ.get("LUNAR_FEATURE_NARRATOR_AUDIT", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _audit_timeout_s() -> float:
+    """Post-hoc auditor timeout (best-effort). A bad/empty value degrades to the
+    default instead of crashing import; must be positive and finite."""
+    raw = os.environ.get("LUNAR_AUDIT_TIMEOUT_S", "90") or "90"
+    try:
+        v = float(raw)
+    except ValueError:
+        return 90.0
+    return v if (v > 0 and v != float("inf") and v == v) else 90.0
+
+
+_AUDIT_TIMEOUT_S = _audit_timeout_s()
+
+
 class GameSession:
     def __init__(
         self,
@@ -87,6 +107,8 @@ class GameSession:
         )
         self._character_setup_block = self._build_character_setup_block()
         self._narrator = narrator
+        from app.engines.auditor_engine import AuditorEngine
+        self._auditor = AuditorEngine(llm=narrator._llm)
         self._memory = memory
         self._story_cards = story_cards or []
         self._world_reactor = world_reactor
@@ -1191,7 +1213,37 @@ class GameSession:
             logger.warning("Failed to build graph relationship summary", exc_info=True)
             return ""
 
-    async def _handle_narrative(self, player_input: str, mode: NarrativeMode = NarrativeMode.NARRATIVE, combat_outcome: str = "", combat_opponent_name: str = "", combat_npc_power: int = 5) -> AsyncIterator[str]:
+    async def _audit_narrative(self, prose: str, player_input: str) -> str:
+        """FASE 3b: post-hoc auditor over finished prose, best-effort with timeout.
+
+        Returns the surgically corrected prose, or the original on timeout/failure.
+        Never breaks a turn: any error reveals the untouched prose.
+        """
+        try:
+            final_prose, report = await asyncio.wait_for(
+                self._auditor.audit(
+                    prose=prose,
+                    player_input=player_input,
+                    language=self.language,
+                    tone_instructions=self.scenario_tone,
+                    max_tokens=getattr(self, "_max_tokens", 2000),
+                ),
+                timeout=_AUDIT_TIMEOUT_S,
+            )
+            if report.get("prose_rewritten"):
+                logger.info(
+                    "Narrator audit corrected prose (%d correction(s))",
+                    len(report.get("corrections", [])),
+                )
+            return final_prose
+        except Exception:
+            logger.warning(
+                "Narrator audit timed out or failed; revealing original prose",
+                exc_info=True,
+            )
+            return prose
+
+    async def _handle_narrative(self, player_input: str, mode: NarrativeMode = NarrativeMode.NARRATIVE, combat_outcome: str = "", combat_opponent_name: str = "", combat_npc_power: int = 5, raw_player_input: str = "") -> AsyncIterator[str]:
         # RAG inputs for crystal selection: scene query + active NPC names.
         recent_narrative = self._history[-1]["content"] if self._history else ""
         rag_query = f"{player_input}\n{recent_narrative}"
@@ -1377,6 +1429,14 @@ class GameSession:
         cleaned = self._clean_truncated_response(full_response)
         cleaned = self._fix_number_spacing(cleaned)
         full_response = cleaned
+
+        # FASE 3b: post-hoc auditor before reveal. Surgical, default clean,
+        # best-effort. Runs on the open scene prose so every downstream consumer
+        # (inventory tags, history, crystallization) sees the audited text.
+        # raw_player_input is the unwrapped player line (combat injects a [SYSTEM]
+        # directive into player_input); the auditor's agency ceiling must be the raw line.
+        if _narrator_audit_enabled() and mode != NarrativeMode.META and full_response.strip():
+            full_response = await self._audit_narrative(full_response, raw_player_input or player_input)
 
         # Send the clean narrative to frontend (all at once)
         yield full_response
@@ -2598,6 +2658,7 @@ class GameSession:
                 combat_outcome=outcome_value,
                 combat_opponent_name=opponent_name,
                 combat_npc_power=npc_power,
+                raw_player_input=player_input,
             ):
                 yield chunk
 

@@ -236,10 +236,12 @@ FASE 0 (instrumentação)  ──►  habilita medir tudo
   reveal-after-audit (~2922).
 - **Auditor / timeout:** `backend/app/config.py` (`AUDIT_TIMEOUT_S`).
 
-> Estado: **FASE 0, 3a, 1 e 2 concluídas** (baseline em `docs/fase0_baseline.md`). Decisão
-> travada restante: gate+Auditor (FASE 3b). Próxima: **FASE 3b (gate `pre_emit_audit` +
-> Auditor)** — habilitada agora que a janela de prosa crua saiu do prefixo e o prefixo estável
-> virou cache read.
+> Estado: **FASE 0, 3a, 1, 2 e 3b (Camada 2) concluídas** (baseline em `docs/fase0_baseline.md`).
+> A **Camada 2 (Auditor pós-hoc)** está no ar; a **Camada 1 (gate na fonte via tool-call)** foi
+> deliberadamente diferida, porque no estado atual do código ela exigiria reescrever o caminho de
+> geração (streaming + cache de 4 zonas via SDK anthropic direto) para forced tool-call no router
+> — alto risco sobre uma "otimização de segunda ordem". Próxima (opcional): **Camada 1**, orientada
+> pelo A/B do Auditor contra o baseline da FASE 0.
 
 ## FASE 0 — concluída
 
@@ -472,3 +474,74 @@ cache), `input_tokens=207`. `cache_read_input_tokens > 0` do 2º turno **atingid
 telemetria `[USAGE]` da FASE 0 agora lê os números reais (o adapter expõe input/cache_read/cache_creation).
 `test_llm_router.py` 5/5; suíte sem regressão nova (as falhas restantes são pré-existentes de outras partes:
 contagem de journal e drift de mock `process_tick(language=)`, nada de anthropic/cache).
+
+## FASE 3b — concluída (Camada 2; Camada 1 diferida)
+
+Adotada a **Camada 2 (Auditor pós-hoc)** — rede final sobre a prosa antes do reveal. A **Camada 1 (gate
+na fonte via tool-call)** foi **deliberadamente diferida**: a decisão travada original ("as duas camadas,
+como no OP-RPG") foi tomada antes de a FASE 2 recolocar o caminho vivo em streaming + cache de 4 zonas via
+SDK anthropic direto. Reativar o single-call / migrar o narrador para `emit_turn` hoje significaria portar
+forced tool-call ao `llm_router` (que só tem `complete`/`stream`) e re-integrar o cache das 4 zonas no
+formato tool-call — reescrita de alto risco sobre o núcleo já validado, por um retorno que o próprio plano
+classifica como "otimização de segunda ordem". Fica como fase futura, orientada pelo A/B do Auditor.
+
+Deltas em relação ao plano:
+- **Novo `AuditorEngine`** (`backend/app/engines/auditor_engine.py`): `audit(prose, player_input, language,
+  tone_instructions, max_tokens) → (final_prose, report)`. Uma chamada `complete()` que retorna JSON
+  (`verdict` clean|corrected, `corrections[]`, `final_prose`, `reasoning_summary` + um gate reflexivo
+  `pre_emit_audit` **descartado no parse**). Sem tool-call — usa o `complete()` que já existe. Default clean:
+  em parse-fail, exceção, `final_prose` vazio, `verdict != corrected` ou prosa idêntica, devolve a prosa
+  **original**.
+- **Adaptação vs OP-RPG.** O Auditor do OP-RPG é enorme (cards/presence/mint/merge) porque assenta numa
+  arquitetura de cards/agentes que o Lunar não tem. Aqui é enxuto: a régua cobre só **FORMA** (os tics da
+  FASE 3a, sintaticamente localizáveis), **AGÊNCIA** do jogador e **IDIOMA** da campanha. Não recebe estado
+  do mundo/lore/inventário — o gate fica barato e escopado, sem julgar canon/continuidade.
+- **Ponto de inserção único.** Em `_handle_narrative`, após a auto-continuação + limpeza e **antes** do
+  `yield full_response`. A prosa auditada é a que o jogador vê **e** a que flui downstream (extração de
+  tags, `_history`, event store, crystallização, witnesses) — sem divergência entre revelado e persistido.
+  Só NARRATIVE/COMBAT; META é excluído. Combate também é auditado (`_handle_combat → _handle_narrative`).
+- **Preservação de marcadores.** No reveal a prosa ainda carrega `[ITEM_ADD|USE|LOSE:...]` e `@nomes`. Guard
+  **hard** nas tags de item (fingerprint por **evento parseado**, mesma gramática de `_extract_inventory_tags`,
+  order-independent): reescrita que dropa/adiciona/altera qualquer evento de inventário é **rejeitada** →
+  revela a original. `@nomes` são cosméticos: queda é **logada**, nunca rejeita (uma excisão de agência que
+  corta a frase com a única menção ainda vale).
+- **Prompt desenhado por workflow** (3 rascunhos independentes → crítica adversarial por candidato →
+  síntese): EN + PT-BR, byte-idêntico por idioma. Zero pink-elephant (vícios nomeados **abstratamente**, as
+  assinaturas de detecção — "as if"/"como quem" — marcadas "nunca escreva você mesmo"; zero travessão
+  demonstrado). Zero vazamento de cenário. `rule_violated` num vocabulário **fixo em inglês** nos dois
+  idiomas (identificadores estáveis para a telemetria de tics). `TONE AND STYLE` entra como **contexto**, não
+  gatilho de correção.
+- **Flags.** `LUNAR_FEATURE_NARRATOR_AUDIT` (default ON, espelha as flags das outras fases) e
+  `LUNAR_AUDIT_TIMEOUT_S` (default 90s, **parse defensivo** — valor inválido degrada pro default, nunca
+  crasha o import). Best-effort: `asyncio.wait_for` no ponto de chamada; qualquer timeout/erro revela a
+  prosa intacta. A chamada passa pelo mesmo router → aparece no `[USAGE]` da FASE 0.
+
+Correções de raiz motivadas pela review adversarial (workflow: 5 dimensões → achar → cético por achado; **5
+achados confirmados, corrigidos; refutados descartados** — o "pink-elephant" das assinaturas de detecção e o
+"final_prose truncado" foram refutados como já tratados):
+1. **Combate FAIL/CRIT_FAIL vazava o teto de agência.** `_handle_combat` embrulha o input do jogador num
+   diretivo `[SYSTEM: dice FAILS…]` e o passa como `player_input`; o Auditor recebia o wrapper como "raw
+   player input". Corrigido: `raw_player_input` separado ao longo de `_handle_narrative`; o teto de agência é
+   sempre a linha crua.
+2. **Regex do guard dessincronizava do parser de `[ITEM_ADD]`.** `[^\]]+` parava no primeiro `]`, então uma
+   tag ADD com `]` no nome/categoria podia ter `category`/`source` alterados sem o guard pegar. Corrigido:
+   fingerprint pela mesma gramática de 3 regexes do `_extract_inventory_tags`.
+3. **`LUNAR_AUDIT_TIMEOUT_S` mal-formado crashava o backend no import** (`float("")` → `ValueError`, único
+   ponto onde o Auditor podia derrubar o processo). Corrigido: `_audit_timeout_s()` com fallback pro default
+   e clamp positivo/finito.
+4. **Conjugação PT-BR:** `poli` (pretérito de "polir", "eu poli") não concordava com "Você" → `lustra`.
+
+Validação:
+- `py_compile` OK; **24 testes novos** (`tests/engines/test_auditor_engine.py` 13 + `tests/services/test_narrator_audit.py`
+  11): clean pass-through, rewrite aplicado, fallback em parse-fail/exceção/timeout, guard rejeita/aceita
+  (inclui regressão do `]`-no-nome), descarte do `pre_emit_audit`, headroom de `max_tokens`, roteamento de
+  idioma, flag on/off, parse defensivo do timeout. **Zero regressão nova** — os testes que falham (mocks
+  async/neo4j/FastAPI) são subconjunto do baseline por `git stash -u`.
+- **Validação end-to-end real** (harness `backend/scripts/validate_fase3b_auditor.py`, DeepSeek V4 via
+  proxy): prosa limpa passa intacta (`clean`); violação de agência é **corrigida por excisão** (narrador
+  inventou fala + decisão do jogador → prosa cortada ao teto declarado, `rule_violated: player_agency`); tag
+  de item **preservada verbatim** sob o guard. Invariante de tag mantido em todos os casos.
+
+Método: scouting inline → workflow de design do prompt (3 rascunhos → crítica adversarial → síntese) →
+implementação direta → workflow de review adversarial (5 dimensões, cético por achado) → correção dos 5
+confirmados → re-validação estrutural + end-to-end real.
