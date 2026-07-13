@@ -236,8 +236,10 @@ FASE 0 (instrumentação)  ──►  habilita medir tudo
   reveal-after-audit (~2922).
 - **Auditor / timeout:** `backend/app/config.py` (`AUDIT_TIMEOUT_S`).
 
-> Estado: **FASE 0 concluída** (baseline em `docs/fase0_baseline.md`). Decisões travadas:
-> cloaking (FASE 2) e gate+Auditor (FASE 3b). Próxima: FASE 3a (despink) ou FASE 1 (janela curta).
+> Estado: **FASE 0, 3a, 1 e 2 concluídas** (baseline em `docs/fase0_baseline.md`). Decisão
+> travada restante: gate+Auditor (FASE 3b). Próxima: **FASE 3b (gate `pre_emit_audit` +
+> Auditor)** — habilitada agora que a janela de prosa crua saiu do prefixo e o prefixo estável
+> virou cache read.
 
 ## FASE 0 — concluída
 
@@ -255,3 +257,218 @@ Deltas em relação ao plano original:
   Atribuição por turno das assíncronas fica para depois (mudança de comportamento).
 - **Confirmado para a FASE 3a:** os anti-tics do commit `b718ba5` são pink-elephant e vazam
   conteúdo One Piece-específico no prompt do engine agnóstico.
+
+## FASE 3a — concluída
+
+Reescrita dos três loci de anti-tic de **proibição+exemplo** (pink-elephant) para **princípio
+afirmativo curto**, confirmados como os únicos no código-fonte por varredura
+(`narrator_engine.py` EN + PT-BR, `opening_generator.py`). Nenhum outro `CRITICAL` era
+anti-tic estilístico — os demais são regras de coerência/canon/knowledge-boundary e ficaram
+intactos.
+
+Deltas:
+- **Header despinkado.** `ANTI-CLICHÉ / STYLISTIC VARIATION (CRITICAL — these tics break
+  immersion)` / `ANTI-VÍCIOS DE LINGUAGEM` → `PROSE TEXTURE` / `TEXTURA DA PROSA`. O próprio
+  header antigo nomeava o vício.
+- **Três intents afirmados sem nomear o vício nem citar anti-exemplo:** (A) NPC demonstra
+  compreensão agindo pela intenção (pergunta/gesto/silêncio/releitura) em vez de ecoar as
+  ações; (B) cadência segue o sentido do momento; (C) sensação ancorada em percepção
+  qualitativa. Removidos os anti-exemplos literais de rule-of-three, recap e pseudo-métrica.
+- **Vazamento de franquia eliminado.** O anti-exemplo PT-BR carregava termos One Piece
+  (`nakama`, `Marinha`, `ilha`) dentro do engine agnóstico — removidos.
+- **Pink-elephant de segunda ordem corrigido na síntese:** a regra de cadência estava
+  estruturada como um trio (o próprio vício que ela pede pra afrouxar); recomposta como
+  contraste de duas opções. Anglicismo `agindo sobre` → `agindo a partir de`.
+- **Regras afirmativas que já funcionavam foram mantidas** (render do input em cena, nomes
+  completos, coerência de INVENTORY/MEMORY).
+
+Método: workflow de 3 rascunhos independentes → crítica adversarial por candidato
+(vice-naming, anti-exemplo, framing negativo, vazamento de franquia, paralelismo EN/PT-BR,
+brace-safety) → síntese da melhor versão corrigindo todos os flags.
+
+Validação estrutural: `py_compile` OK; `_build_narrator_rules` renderiza EN e PT-BR sem erro
+(o `.format()` sobrevive — zero chaves órfãs); asserts confirmam headers novos, ausência dos
+termos de franquia e dos nomes de vício.
+
+**A/B controlado cego (concluído):** harness (`backend/scripts/tic_harness.py`) gera prosa nos
+dois braços — regras OLD (pink-elephant) vs NEW (afirmativas) — com cenário/inputs/provider
+(DeepSeek V4 flash) fixos, variando só o bloco de regras. 18 respostas/braço. Medição em duas
+camadas: regex determinístico + LLM-judge cego (workflow, 36 juízes + verificação adversarial
+de cada recap). **Todos os tics caem no braço NEW:** rule_of_three −78% (regex) / −32%
+(judge); fake_metrics −100%/−50%; em_dash interruptivo −100%; npc_recaps confirmado −50%.
+Hipótese confirmada, sem regressão. Detalhe, tabelas e limitações em `docs/fase3a_ab.md`
+(dados brutos em `docs/fase3a_ab/`).
+
+## FASE 1 — concluída
+
+O narrador deixa de reler a prosa crua da campanha inteira; passa a ver só a **cena aberta**
+(eventos após a última fronteira de crystal) + 1 batch de overlap. O passado destilado já vive
+nos crystals do system prompt.
+
+Deltas em relação ao plano original:
+- **`_history` permanece íntegro; o recorte é derivado, não destrutivo.** Em vez de mutilar
+  `self._history` (itens 1/3 do plano), o corte vive num método novo `_open_scene_history()`
+  (`game_session.py`), consumido só nos dois caminhos que alimentam o narrador (`stream_narrative`
+  e o single-call ocioso, mais as continuations de truncamento). Os ~20 consumidores de cauda de
+  `_history` (power eval, RAG query, meta, `_history[-20:]`, scans reversos) ficam intactos. O
+  item 3 ("boot bate com sessão viva") é satisfeito **por construção**: a janela deriva do
+  `_history` completo, então boot e sessão viva produzem fatias idênticas sem tocar
+  `_rebuild_history_from_events`.
+- **Fronteira por cursor de crystal, não por contagem de mensagens.** `overlap_cursor =
+  short[-2].source_end_created_at` (penúltimo SHORT crystal); `n = |eventos PLAYER_ACTION +
+  NARRATOR_RESPONSE após o cursor|` via `get_after`; janela = `_history[-n:]`, com piso de 4 msgs.
+  O alinhamento 1:1 entre `_history` e o store se sustenta (PLAYER_ACTION é persistido no início
+  de `process_action`, então até rejeições de anti-griefing casam 2 msgs ↔ 2 eventos). O design
+  **sempre erra para incluir mais prosa** (no ponto de chamada o `_history` fica no máximo 1
+  evento atrás do store), nunca cortando prosa não-crystallizada.
+- **Reversível por flag** `LUNAR_FEATURE_OPEN_SCENE_WINDOW` (default ON); off restaura o feed de
+  history completo. Fallback defensivo: qualquer exceção, backlog patológico (`n ≥ 4000`) ou
+  campanha ainda curta (`< 2` SHORT crystals) retorna o history completo.
+
+Correção de raiz motivada por review adversarial (4 lentes + cético por achado):
+- 1 defeito real sobreviveu: **cursor-jump no rebuild.** `_rebuild_memory_crystals` reconstruía
+  `source_end_created_at` a partir do `created_at` do evento MEMORY_CRYSTAL (**timestamp de
+  persistência**), não do último evento raw. Como a crystallização é fire-and-forget e roda por
+  último, eventos do turno seguinte podem ter `created_at` **antes** desse persist-time; no boot o
+  cursor pulava por cima deles e eles nunca mais eram crystallizados (gap permanente na memória
+  destilada). A FASE 1 tornava esse gap latente visível ao narrador.
+- **Corrigido na fonte:** `_persist_crystal` (`memory_engine.py`) passa a gravar
+  `source_start/source_end_created_at` reais no payload; `_rebuild_memory_crystals` os restaura
+  (fallback para `ev.created_at` em crystals legados). Cursor reconstruído == cursor vivo.
+  Beneficia também a crystallização normal (fim do gap), não só a janela.
+
+Validação:
+- `py_compile` OK nos dois módulos. 12 testes novos em `tests/services/test_open_scene_window.py`:
+  invariante de cobertura, overlap por cursor, piso de 4 msgs, fallbacks (flag off, sem crystal,
+  cursor ausente, backlog, exceção) e **regressão do cursor-jump** (reproduz persist-skew +
+  restart; confirmado que falha sem a correção → cursor vira o persist-time).
+- **Economia medida:** história ao narrador cai de **173.560 → 2.935 tokens (−98,3%)** num cenário
+  de 300 trocas (janela de 1M), batendo o alvo do plano (baseline ~133k de história crua → dezenas
+  de k; aqui ~3k, dentro do system prompt que permanece).
+- Sem regressão: as 5 falhas de `test_game_session.py` são pré-existentes (mocks async não
+  configurados), idênticas no baseline por `git stash`.
+
+Método: implementação direta + workflow de verificação adversarial (lentes: invariante,
+alinhamento history/store, call-sites/consumidores, overlap/edge-cases; cada achado re-verificado
+por cético independente com viés a REFUTAR o benigno "inclui mais prosa"). 1 achado confirmado,
+corrigido na raiz.
+
+## FASE 2 — concluída
+
+O system prompt do narrador vira 4 zonas; o prefixo estável (papel/tom/regras/opening + catálogo
+canônico) vira **cache read** a partir do 2º turno via cloaking no caminho Anthropic. Reversível
+por flag `LUNAR_FEATURE_PROMPT_CACHE` (default ON); OFF restaura o `build_system_prompt` monolítico.
+
+Deltas em relação ao plano:
+- **Transform por provider no `llm_router`, não no narrador.** O narrador (`stream_narrative_cached`)
+  emite o system como blocos de texto com `cache_control` nas zonas 0 e 1 (2 de 4 breakpoints) e
+  permanece agnóstico de provider. O `llm_router._prepare_cached_messages` detecta a "forma cacheada"
+  (system com `content` = lista de blocos) e aplica o transporte: **Anthropic** faz cloaking (blocos
+  na 1ª mensagem `user`, tag `<narrator-instructions>` no bloco 0, `cache_control` preservado, header
+  beta `extended-cache-ttl-2025-04-11`, TTL 1h); **DeepSeek/OpenAI** achata as zonas num único system
+  string (auto-cacheia por prefixo). Gating porque `cache_control` é da Anthropic e o Lunar usa
+  litellm com provider selecionável por request.
+- **Zonas.** Z0 (cache) = papel+idioma+character_setup+`TONE AND STYLE`+opening+regras — byte-idêntico
+  por campanha. Z1 (cache) = LORE cards ordenados por `(created_at,id)` + crystals tier MEMORY
+  (`render_permanent_context`) — canon append-only. Z2 (volátil) = memory recente (sem permanent) +
+  inventário + NPC + journal + hints + grafo + RAG de cards **não-LORE** + diretiva de comprimento.
+  Z3 = janela de cena aberta (FASE 1) + `player_input`.
+- **Guard de temperature em TODAS as chamadas** (não só narrador): `_NO_SAMPLING_MODELS` =
+  opus-4-8/4-7, sonnet-5, fable-5, mythos-5 → omite `temperature` (400 se enviado). Opus 4.6 /
+  Sonnet 4.6 seguem aceitando. Isto **habilita** modelos Anthropic modernos, que hoje davam 400.
+- **Split de memory e cards é aditivo** (defaults preservam comportamento): `include_permanent` em
+  `build_context_window`/`_async`; `exclude_lore` em `_format_story_cards_context`. Nenhum consumidor
+  fora do caminho de narrativa cacheada muda.
+- **Desvio do plano:** "um prefixo cacheado serve PT e EN" não se aplica — as regras do Lunar são
+  específicas por idioma (`_build_narrator_rules` EN vs PT-BR) e cada campanha tem idioma fixo, então
+  Z0 é específico por idioma mas byte-estável por campanha. Sem diretiva de idioma separada em Z2.
+
+Correções de raiz motivadas pela review adversarial (workflow: 5 lentes → achar → cético por achado;
+**14 achados, 5 confirmados, 9 refutados** — todos os refutados eram telemetria-dependente ou caminhos
+latentes/mortos: single-call desabilitado, sem fallback configurado, nenhum caller passa `extra_headers`,
+mínimo de 4096 tokens é comportamento inerente auto-corrigível):
+1. **`max_tokens` (slider por-request) vazava no Z0 cacheado** via `_length_instruction` (embute o
+   número literal de tokens no bloco de regras) → mudar o slider estourava o prefixo. Corrigido: a
+   diretiva de comprimento saiu do Z0 (`build_zone0` usa `include_length=False`) e virou linha volátil
+   em Z2 (`length_directive`). Z0 agora é `max_tokens`-independente.
+2. **Z1 despejava LORE sem budget** → risco de overflow em janela pequena + cenário lore-heavy.
+   Corrigido: cap estável determinístico (oldest-first por `(created_at,id)`, generoso em 1M, ≥1 card),
+   preservando append-only.
+3. **Header "WORLD LORE" vazio em Z2** quando todos os cards são LORE → `_format_story_cards_context`
+   retorna `""` quando o filtro esvazia a seleção.
+4. **Cloak rodava antes do `_sanitize_messages_for_anthropic`** → reordenado (sanitize antes do
+   transform), restaurando o strip de assistant líder legado no caminho cloaked.
+
+Validação:
+- `py_compile` OK nos 4 módulos; **147 testes passam**. As 6 falhas + 8 erros restantes são
+  pré-existentes (mocks async, neo4j, versão do FastAPI) — reprodução idêntica com a flag OFF confirma
+  zero regressão nova. 2 testes de narrativa atualizados para mockar o caminho cacheado (novo default).
+- **Conservação de conteúdo** (teste dedicado): cada fato do monolito antigo aparece **exatamente uma
+  vez** na união das zonas, na zona correta (permanent+LORE→Z1, recent+NPC→Z2, estático→Z0). Zero
+  duplicação, zero perda.
+- **Byte-estabilidade** (teste dedicado): Z0 determinístico e `max_tokens`-independente; Z1 independe da
+  ordem das linhas do DB (o sort normaliza) e é **append-only** (novo card mantém o prefixo anterior
+  idêntico → Z0 segue cache read, só o delta de Z1 re-caceia). Telemetria da FASE 0 lê a forma
+  cacheada/cloaked sem erro.
+
+**Limitação conhecida (resolvida pela validação empírica abaixo).** O OP-RPG provou o cloaking com o SDK
+`anthropic` direto; o Lunar usa **litellm**. Se o litellm não repassar `cache_control`/`extra_headers` ao
+CLIProxyAPI, `cache_read` fica 0 — confirmar num turno real Anthropic (alvo do plano:
+`cache_read_input_tokens > 0` do 2º turno). Fallback: flag OFF. Plano B: mover o narrador Anthropic pro
+SDK `anthropic` direto. O mínimo de 4096 tokens (Opus) para cachear Z0+Z1 pode não disparar em cenários
+mínimos (inerente, auto-corrige quando tom/opening/LORE crescem).
+
+## FASE 2 — validação empírica (concluída)
+
+Turnos reais contra Claude Max via CLIProxyAPI na `:8318` (o proxy vivo é a instância do OP-RPG, mesmo
+binário + mesmo backend Claude Max; usada com a api-key dela — o transporte é idêntico ao do Lunar).
+Harness em `backend/scripts/`: `validate_fase2_cache.py` (caminho real do narrador via litellm),
+`direct_cache_probe.py` (payload cloaked idêntico direto no proxy), `litellm_wire_capture.py` (corpo HTTP
+que o litellm de fato envia).
+
+**Dois achados independentes, ambos conclusivos:**
+
+1. **O mecanismo de cloaking está correto e cacheia de verdade.** O `direct_cache_probe` reproduz o payload
+   byte-idêntico que o Lunar monta (blocos cloaked no 1º `user`, `cache_control ttl 1h` em Z0/Z1, header
+   `extended-cache-ttl-2025-04-11`) e posta direto no proxy, lendo o usage cru: **turno 1
+   `cache_creation_input_tokens=16643` com `ephemeral_1h_input_tokens=16643`** (o TTL de 1h sobrevive ao
+   proxy — não cai pro efêmero de 5 min); **turno 2 `cache_read_input_tokens=16643`, `input_tokens=119`**.
+   Prefixo Z0+Z1 escrito no turno 1 e lido inteiro no turno 2. Sonnet 4.6 cacheia; Opus 4.6 **não** cacheou
+   um prefixo de 1373 tokens (< mínimo 4096 do Opus) — confirma empiricamente a limitação de min-tokens.
+
+2. **O caminho de produção (litellm 1.43.0) NÃO cacheia — `cache_read=0` é real, não cegueira de
+   telemetria.** O `litellm_wire_capture` mostra que o litellm **remove todo `cache_control`** antes de
+   enviar ao proxy: 0 ocorrências no corpo, blocos com `cache_control=None`. No caminho cloaked strippa os
+   markers dos blocos de mensagem; no caminho `system` **achata a lista de blocos numa string**
+   (`payload.system` vira `str`), descartando o marker. O `extra_headers`/beta-header **passa** (está no
+   fio), mas sem `cache_control` a Anthropic não cacheia. Sintoma colateral: o litellm devolve usage
+   degenerado (`{prompt_tokens: 68}`, sem campos de cache), então a telemetria `[USAGE]` da FASE 0 também
+   lê 0.
+
+**Conclusão.** A FASE 2 está **estruturalmente correta e comprovadamente eficaz** — mas **inerte em
+produção** enquanto o narrador Anthropic passar pelo litellm 1.43.0, que não repassa `cache_control` por
+nenhum caminho (nem mensagem, nem `system`). Nenhuma reorganização de zonas resolve. Remédios, em ordem de
+esforço: **(a)** subir o litellm para uma versão que preserve `cache_control` de content-block no adapter
+Anthropic e revalidar com o mesmo harness; **(b) Plano B** — rotear o narrador Anthropic pelo SDK
+`anthropic` direto (o `direct_cache_probe` já prova que funciona ponta-a-ponta). Até então: DeepSeek segue
+sem cache_control (auto-cache por prefixo, não afetado) e o flag `LUNAR_FEATURE_PROMPT_CACHE` pode ficar ON
+sem dano (o cloaking é montado mas o litellm o descarta — comportamento idêntico a OFF no provider
+Anthropic).
+
+### Correção aplicada — Plano B (SDK `anthropic` direto)
+
+Escolhido o Plano B. `llm_router.py`: quando o provider é ANTHROPIC **e** as mensagens carregam
+`cache_control` (a forma cloaked da FASE 2), `complete`/`stream` roteiam pelo SDK `anthropic` direto ao
+proxy (`_complete_anthropic_sdk` + `_get_anthropic_client`; `AsyncAnthropic` cacheado por `(base_url, key)`,
+`max_retries=0` com o mesmo loop de retry `_PROXY_RETRY_DELAYS`). O `cache_control` e o header beta são
+preservados; a resposta do SDK é remapeada pra forma litellm (`_SDKResponse`) pra `_log_call`/`_cache_tokens`
+lerem o usage real. Detecção via `_has_cache_control`. Demais chamadas (DeepSeek, e chamadas Anthropic sem
+cache_control como detect_mode) seguem no litellm — mudança cirúrgica. Dependência nova: `anthropic==0.116.0`
+(httpx 0.27 / pydantic intactos, sem conflito com litellm 1.43.0).
+
+**Re-validação (mesmo harness, caminho real do router):** turno 1 `cache_creation=15290` (zonas Z0+Z1
+escritas) + `cache_read=1359` (prefixo do proxy) → turno 2 `cache_read=16649` (prefixo inteiro servido do
+cache), `input_tokens=207`. `cache_read_input_tokens > 0` do 2º turno **atingido em produção**, e a
+telemetria `[USAGE]` da FASE 0 agora lê os números reais (o adapter expõe input/cache_read/cache_creation).
+`test_llm_router.py` 5/5; suíte sem regressão nova (as falhas restantes são pré-existentes de outras partes:
+contagem de journal e drift de mock `process_tick(language=)`, nada de anthropic/cache).

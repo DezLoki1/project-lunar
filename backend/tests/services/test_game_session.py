@@ -21,7 +21,9 @@ def mock_narrator():
         {"mode": "NARRATIVE", "ambush": False, "narrative_time_seconds": 60}
     ))
     m.build_system_prompt = MagicMock(return_value="You are a narrator.")
+    m.build_zone0 = MagicMock(return_value="ZONE0")
     m.stream_narrative = MagicMock(return_value=async_gen("Once", " upon", " a time"))
+    m.stream_narrative_cached = MagicMock(side_effect=lambda *a, **k: async_gen("Once", " upon", " a time"))
     return m
 
 
@@ -155,6 +157,8 @@ async def test_journal_entry_emitted_as_sse():
     ))
     narrator.build_system_prompt = MagicMock(return_value="You are a narrator.")
     narrator.stream_narrative = MagicMock(return_value=async_gen("A hidden passage opens."))
+    narrator.stream_narrative_cached = MagicMock(side_effect=lambda *a, **k: async_gen("A hidden passage opens."))
+    narrator.build_zone0 = MagicMock(return_value="ZONE0")
 
     journal_entry = JournalEntry(
         campaign_id="test-campaign",
@@ -240,6 +244,8 @@ async def test_process_action_triggers_auto_plot_generation_npc():
     ))
     narrator.build_system_prompt = MagicMock(return_value="You are a narrator.")
     narrator.stream_narrative = MagicMock(return_value=async_gen("A corridor opens."))
+    narrator.stream_narrative_cached = MagicMock(side_effect=lambda *a, **k: async_gen("A corridor opens."))
+    narrator.build_zone0 = MagicMock(return_value="ZONE0")
 
     memory = MagicMock()
     memory.build_context_window = MagicMock(return_value="MEM_CTX")
@@ -314,6 +320,8 @@ async def test_auto_plot_respects_cooldown_between_actions():
     ))
     narrator.build_system_prompt = MagicMock(return_value="You are a narrator.")
     narrator.stream_narrative = MagicMock(return_value=async_gen("Narrative chunk."))
+    narrator.stream_narrative_cached = MagicMock(side_effect=lambda *a, **k: async_gen("Narrative chunk."))
+    narrator.build_zone0 = MagicMock(return_value="ZONE0")
 
     memory = MagicMock()
     memory.build_context_window = MagicMock(return_value="MEM_CTX")
@@ -381,9 +389,10 @@ async def test_inventory_tags_parsed_from_narrative():
         {"mode": "NARRATIVE", "ambush": False, "narrative_time_seconds": 60}
     ))
     narrator.build_system_prompt = MagicMock(return_value="You are a narrator.")
-    narrator.stream_narrative = MagicMock(return_value=async_gen(
-        "You find a gleaming sword. [ITEM_ADD:Gleaming Sword|weapon|Found on ground] It shines."
-    ))
+    _sword_narr = "You find a gleaming sword. [ITEM_ADD:Gleaming Sword|weapon|Found on ground] It shines."
+    narrator.stream_narrative = MagicMock(return_value=async_gen(_sword_narr))
+    narrator.stream_narrative_cached = MagicMock(side_effect=lambda *a, **k: async_gen(_sword_narr))
+    narrator.build_zone0 = MagicMock(return_value="ZONE0")
 
     journal = MagicMock()
     journal.evaluate_and_log = AsyncMock(return_value=None)
@@ -437,6 +446,8 @@ async def test_meta_mode_uses_meta_prompt():
     narrator.build_meta_prompt = MagicMock(return_value="You are a Game Master.")
     narrator.build_system_prompt = MagicMock(return_value="You are a narrator.")
     narrator.stream_narrative = MagicMock(return_value=async_gen("You have: Sword (carried)."))
+    narrator.stream_narrative_cached = MagicMock(side_effect=lambda *a, **k: async_gen("You have: Sword (carried)."))
+    narrator.build_zone0 = MagicMock(return_value="ZONE0")
 
     journal = MagicMock()
     journal.evaluate_and_log = AsyncMock(return_value=None)

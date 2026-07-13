@@ -40,6 +40,18 @@ def _npc_decay_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _open_scene_window_enabled() -> bool:
+    """FASE 1 flag (default ON); LUNAR_FEATURE_OPEN_SCENE_WINDOW=0 restores full-history behavior."""
+    raw = os.environ.get("LUNAR_FEATURE_OPEN_SCENE_WINDOW", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _prompt_cache_enabled() -> bool:
+    """FASE 2 flag (default ON); LUNAR_FEATURE_PROMPT_CACHE=0 restores the monolithic system prompt."""
+    raw = os.environ.get("LUNAR_FEATURE_PROMPT_CACHE", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 class GameSession:
     def __init__(
         self,
@@ -383,8 +395,10 @@ class GameSession:
                     ai_content=ev.payload.get("ai_content", ""),
                     event_count=ev.payload.get("event_count", 0),
                     consumed=False,  # Inferred below from tier counts
-                    source_start_created_at=None,
-                    source_end_created_at=ev.created_at,
+                    source_start_created_at=ev.payload.get("source_start_created_at"),
+                    # Real raw-event boundary; fall back to persist time for
+                    # legacy crystals that predate this field.
+                    source_end_created_at=ev.payload.get("source_end_created_at") or ev.created_at,
                     witnessed_by=witnesses,
                 ))
             except Exception:
@@ -704,6 +718,43 @@ class GameSession:
         except AttributeError:
             return 64_000
 
+    _OPEN_SCENE_OVERLAP_BATCHES = 1   # crystallized batches kept as continuity bridge
+    _OPEN_SCENE_MIN_MESSAGES = 4      # short-term coherence floor
+    _OPEN_SCENE_MAX_EVENTS = 4000     # safety bound above which we keep full history
+
+    def _open_scene_history(self) -> list[dict]:
+        """Narrator's raw-prose window: open scene plus one batch of overlap; crystals cover the rest."""
+        if not _open_scene_window_enabled():
+            return self._history
+        try:
+            from app.engines.memory_engine import CrystalTier
+            short = [
+                c for c in self._memory.get_crystals(self.campaign_id)
+                if getattr(c, "tier", None) == CrystalTier.SHORT
+            ]
+            idx = self._OPEN_SCENE_OVERLAP_BATCHES + 1
+            if len(short) < idx:
+                return self._history
+            overlap_cursor = short[-idx].source_end_created_at
+            if not overlap_cursor:
+                return self._history
+            open_events = self._event_store.get_after(
+                campaign_id=self.campaign_id,
+                after_created_at=overlap_cursor,
+                limit=self._OPEN_SCENE_MAX_EVENTS,
+                event_types=[EventType.PLAYER_ACTION, EventType.NARRATOR_RESPONSE],
+            )
+            n = len(open_events)
+            if n <= 0 or n >= self._OPEN_SCENE_MAX_EVENTS:
+                return self._history
+            window = self._history[-n:]
+            if len(window) < self._OPEN_SCENE_MIN_MESSAGES and len(self._history) >= self._OPEN_SCENE_MIN_MESSAGES:
+                window = self._history[-self._OPEN_SCENE_MIN_MESSAGES:]
+            return window
+        except Exception:
+            logger.debug("open-scene window failed; keeping full history", exc_info=True)
+            return self._history
+
     # ── Story Card RAG ──────────────────────────────────────────────
     # Fraction of the provider's context window allocated to story cards.
     # The rest is split between system prompt, chat history, and output.
@@ -781,10 +832,16 @@ class GameSession:
 
         return score
 
+    @staticmethod
+    def _card_type_value(card) -> str:
+        card_type = getattr(card, "card_type", "UNKNOWN")
+        return getattr(card_type, "value", str(card_type)).upper()
+
     def _format_story_cards_context(
         self,
         player_input: str = "",
         recent_narrative: str = "",
+        exclude_lore: bool = False,
     ) -> str:
         """Select and format story cards using RAG relevance scoring.
 
@@ -792,6 +849,7 @@ class GameSession:
         recent narrative, active NPCs) and included until the token budget
         is exhausted.  Budget scales with the provider's context window:
         ~30k tokens on DeepSeek (200k), ~40k on Anthropic (1M, capped).
+        exclude_lore drops LORE cards (FASE 2 renders them in the cached zone).
         """
         if not self._story_cards:
             return ""
@@ -818,10 +876,16 @@ class GameSession:
         # Score all cards
         scored_cards: list[tuple[float, int, object]] = []
         for idx, card in enumerate(self._story_cards):
+            if exclude_lore and self._card_type_value(card) == "LORE":
+                continue
             score = self._score_card_relevance(
                 card, context_keywords, active_npc_names, mentioned_names,
             )
             scored_cards.append((score, idx, card))
+
+        # Nothing survived filtering (e.g. all cards were LORE, excluded for zone 1)
+        if not scored_cards:
+            return ""
 
         # Sort by score descending (idx breaks ties for stable order)
         scored_cards.sort(key=lambda x: (-x[0], x[1]))
@@ -870,6 +934,88 @@ class GameSession:
         )
 
         return "\n".join(lines)
+
+    # ── FASE 2 prompt-cache zones ───────────────────────────────────
+    def _render_stable_lore_cards(self) -> str:
+        """Render LORE cards in a byte-stable order (created_at, id) for the cached zone.
+
+        LORE cards are the scenario's canonical world rules: immutable and always
+        relevant, so they belong in the cached prefix rather than the RAG selection.
+        """
+        lore = [c for c in self._story_cards if self._card_type_value(c) == "LORE"]
+        if not lore:
+            return ""
+        lore.sort(key=lambda c: (getattr(c, "created_at", "") or "", getattr(c, "id", "") or ""))
+        # Deterministic budget cap: keeps the cached prefix from overflowing a small
+        # context window. Fill oldest-first in the stable order so appending canon
+        # never evicts an already-included card (byte-stable prefix).
+        budget = self._compute_story_cards_budget()
+        header = "WORLD LORE (canonical rules):"
+        lines = [header]
+        used = estimate_tokens(header)
+        omitted = 0
+        for card in lore:
+            content = card.content if isinstance(card.content, dict) else {}
+            block = [f"[LORE] {card.name}"]
+            for k, v in content.items():
+                if v:
+                    block.append(f"  {k}: {v}")
+            block_text = "\n".join(block)
+            cost = estimate_tokens(block_text)
+            if used + cost > budget and len(lines) > 1:
+                omitted += 1
+                continue
+            lines.append(block_text)
+            used += cost
+        if omitted:
+            logger.info(
+                "Zone1 LORE cap: %d/%d LORE cards included (budget %d tokens, used %d)",
+                len(lore) - omitted, len(lore), budget, used,
+            )
+        return "\n".join(lines)
+
+    def _build_zone1_catalog(self, permanent_ctx: str) -> str:
+        """Cache zone 1: near-static canon (LORE cards + permanent MEMORY crystals)."""
+        parts: list[str] = []
+        lore = self._render_stable_lore_cards()
+        if lore:
+            parts.append(lore)
+        if permanent_ctx:
+            parts.append(f"\nWORLD MEMORY (permanent canon):\n{permanent_ctx}")
+        return "\n".join(parts)
+
+    def _build_zone2_volatile(
+        self,
+        memory_ctx: str,
+        inventory_ctx: str,
+        npc_ctx: str,
+        journal_ctx: str,
+        narrator_hints: str,
+        graph_ctx: str,
+        story_cards_ctx: str,
+        length_directive: str = "",
+    ) -> str:
+        """Cache zone 2: per-action volatile context. Mirrors the dynamic half of
+        build_system_prompt so the narrator sees the same framing either way.
+        length_directive is per-request so it lives here, never in cached zone 0."""
+        parts: list[str] = []
+        if length_directive:
+            parts.append(f"\n{length_directive}")
+        if memory_ctx:
+            parts.append(f"\nWORLD MEMORY:\n{memory_ctx}")
+        if inventory_ctx:
+            parts.append(f"\nPLAYER INVENTORY:\n{inventory_ctx}")
+        if npc_ctx:
+            parts.append(f"\n{npc_ctx}")
+        if journal_ctx:
+            parts.append(f"\n{journal_ctx}")
+        if narrator_hints:
+            parts.append(narrator_hints)
+        if graph_ctx:
+            parts.append(f"\nWORLD RELATIONSHIPS (who knows who, connections between entities):\n{graph_ctx}")
+        if story_cards_ctx:
+            parts.append(f"\n{story_cards_ctx}")
+        return "\n".join(parts)
 
     def _verify_npc_seed_in_response(self, narrative_text: str) -> None:
         """Check if the pending NPC seed name appeared in the narrative response.
@@ -1055,12 +1201,17 @@ class GameSession:
                 active_npc_names.add(mind.name)
         rag_context_window = self._get_context_window()
 
+        # FASE 2: when caching, the permanent MEMORY tier and LORE cards move to
+        # the cached zone; memory_ctx and the RAG cards keep only volatile content.
+        cache_on = _prompt_cache_enabled() and mode != NarrativeMode.META
+
         if self._graphiti:
             memory_ctx = await self._memory.build_context_window_async(
                 self.campaign_id,
                 query_text=rag_query,
                 active_npc_names=active_npc_names,
                 context_window=rag_context_window,
+                include_permanent=not cache_on,
             )
         else:
             memory_ctx = self._memory.build_context_window(
@@ -1068,7 +1219,9 @@ class GameSession:
                 query_text=rag_query,
                 active_npc_names=active_npc_names,
                 context_window=rag_context_window,
+                include_permanent=not cache_on,
             )
+        permanent_ctx = self._memory.render_permanent_context(self.campaign_id) if cache_on else ""
 
         # Gather world context (shared by all modes)
         inventory_ctx = ""
@@ -1094,8 +1247,11 @@ class GameSession:
         story_cards_ctx = self._format_story_cards_context(
             player_input=player_input,
             recent_narrative=self._history[-1]["content"] if self._history else "",
+            exclude_lore=cache_on,
         )
 
+        system_prompt = ""
+        zone0 = zone1 = zone2 = ""
         if mode == NarrativeMode.META:
             system_prompt = self._narrator.build_meta_prompt(
                 language=self.language,
@@ -1147,28 +1303,53 @@ class GameSession:
             if knowledge_block:
                 narrator_hints += knowledge_block
 
-            system_prompt = self._narrator.build_system_prompt(
-                tone_instructions=self.scenario_tone,
-                memory_context=memory_ctx,
-                language=self.language,
-                inventory_context=inventory_ctx,
-                max_tokens=getattr(self, '_max_tokens', 2000),
-                narrator_hints=narrator_hints,
-                graph_context=graph_ctx,
-                npc_context=npc_ctx,
-                journal_context=journal_ctx,
-                story_cards_context=story_cards_ctx,
-                character_setup=self._character_setup_block,
-                opening_narrative=self._opening_narrative,
-            )
+            if cache_on:
+                zone0 = self._narrator.build_zone0(
+                    tone_instructions=self.scenario_tone,
+                    language=self.language,
+                    character_setup=self._character_setup_block,
+                    opening_narrative=self._opening_narrative,
+                )
+                zone1 = self._build_zone1_catalog(permanent_ctx)
+                length_directive = self._narrator.length_directive(getattr(self, '_max_tokens', 2000))
+                zone2 = self._build_zone2_volatile(
+                    memory_ctx, inventory_ctx, npc_ctx, journal_ctx,
+                    narrator_hints, graph_ctx, story_cards_ctx,
+                    length_directive=length_directive,
+                )
+            else:
+                system_prompt = self._narrator.build_system_prompt(
+                    tone_instructions=self.scenario_tone,
+                    memory_context=memory_ctx,
+                    language=self.language,
+                    inventory_context=inventory_ctx,
+                    max_tokens=getattr(self, '_max_tokens', 2000),
+                    narrator_hints=narrator_hints,
+                    graph_context=graph_ctx,
+                    npc_context=npc_ctx,
+                    journal_context=journal_ctx,
+                    story_cards_context=story_cards_ctx,
+                    character_setup=self._character_setup_block,
+                    opening_narrative=self._opening_narrative,
+                )
 
         # Collect full response before sending to frontend (no streaming)
         context_window = self._get_context_window()
+        narrator_history = self._open_scene_history()
+
+        def _run(prompt: str, hist: list[dict]) -> AsyncIterator[str]:
+            if cache_on:
+                return self._narrator.stream_narrative_cached(
+                    prompt, zone0, zone1, zone2, hist,
+                    context_window=context_window,
+                )
+            return self._narrator.stream_narrative(
+                prompt, system_prompt, hist,
+                context_window=context_window,
+            )
+
         full_response = ""
-        async for chunk in self._narrator.stream_narrative(
-            player_input, system_prompt, self._history,
-            context_window=context_window,
-        ):
+        async for chunk in _run(player_input, narrator_history):
             full_response += chunk
 
         # Auto-continuation: if the response was truncated mid-sentence,
@@ -1185,14 +1366,11 @@ class GameSession:
                 "new beats, NPC reactions to imagined player actions, or further "
                 "narrative progression."
             )
-            continuation_history = self._history + [
+            continuation_history = narrator_history + [
                 {"role": "user", "content": player_input},
                 {"role": "assistant", "content": full_response},
             ]
-            async for chunk in self._narrator.stream_narrative(
-                continuation_prompt, system_prompt, continuation_history,
-                context_window=context_window,
-            ):
+            async for chunk in _run(continuation_prompt, continuation_history):
                 full_response += chunk
 
         # Final cleanup: trim truncation and fix number spacing
@@ -1448,11 +1626,12 @@ class GameSession:
 
         # Single LLM call with prompt caching on static part
         context_window = self._get_context_window()
+        narrator_history = self._open_scene_history()
         result = await self._narrator.complete_single_call(
             player_input=player_input,
             static_prompt=static_prompt,
             dynamic_prompt=dynamic_prompt,
-            history=self._history,
+            history=narrator_history,
             canonical_names=canonical_names,
             max_tokens=max_tokens,
             context_window=context_window,
@@ -1477,7 +1656,7 @@ class GameSession:
                 "new beats, NPC reactions to imagined player actions, or further "
                 "narrative progression."
             )
-            continuation_history = self._history + [
+            continuation_history = narrator_history + [
                 {"role": "user", "content": player_input},
                 {"role": "assistant", "content": full_response},
             ]

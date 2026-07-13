@@ -235,6 +235,23 @@ class MemoryEngine:
     def get_crystals(self, campaign_id: str) -> list[MemoryCrystal]:
         return self._crystals.get(campaign_id, [])
 
+    def render_permanent_context(self, campaign_id: str) -> str:
+        """Render only the MEMORY-tier crystals (permanent canon) as a cacheable block.
+
+        Used by the FASE 2 zone split: this immutable, append-only canon lives in the
+        cached zone, separate from the volatile recent-tier / DELTA context.
+        """
+        memory_crystals = [
+            c for c in self._crystals.get(campaign_id, [])
+            if c.tier == CrystalTier.MEMORY
+        ]
+        if not memory_crystals:
+            return ""
+        parts = ["=== PRMNT_MEM ==="]
+        for c in memory_crystals:
+            parts.append(c.ai_content)
+        return "\n".join(parts)
+
     def _unconsumed_crystals(self, campaign_id: str, tier: CrystalTier) -> list[MemoryCrystal]:
         """Return crystals of a given tier that haven't been consolidated yet."""
         return [
@@ -675,6 +692,7 @@ class MemoryEngine:
         active_npc_names: set[str] | None = None,
         location: str = "",
         context_window: int = 0,
+        include_permanent: bool = True,
     ) -> str:
         """Build the WORLD MEMORY section for the narrator's system prompt.
 
@@ -695,12 +713,13 @@ class MemoryEngine:
         query_keywords = _extract_keywords(query_text)
         location_keywords = _extract_keywords(location)
 
-        # MEMORY tier: permanent facts (show all)
+        # MEMORY tier: permanent facts (show all). When include_permanent is
+        # False the caller renders this tier separately (FASE 2 cached zone).
         memory_crystals = [
             c for c in self._crystals.get(campaign_id, [])
             if c.tier == CrystalTier.MEMORY
         ]
-        if memory_crystals:
+        if include_permanent and memory_crystals:
             parts.append("=== PRMNT_MEM ===")
             for c in memory_crystals:
                 parts.append(c.ai_content)
@@ -753,6 +772,7 @@ class MemoryEngine:
         active_npc_names: set[str] | None = None,
         location: str = "",
         context_window: int = 0,
+        include_permanent: bool = True,
     ) -> str:
         """Async version with optional Graphiti fact retrieval. Same RAG semantics."""
         parts: list[str] = []
@@ -768,7 +788,7 @@ class MemoryEngine:
             c for c in self._crystals.get(campaign_id, [])
             if c.tier == CrystalTier.MEMORY
         ]
-        if memory_crystals:
+        if include_permanent and memory_crystals:
             parts.append("=== PRMNT_MEM ===")
             for c in memory_crystals:
                 parts.append(c.ai_content)
@@ -909,6 +929,10 @@ class MemoryEngine:
                     "event_count": crystal.event_count,
                     "consumed": crystal.consumed,
                     "witnessed_by": list(crystal.witnessed_by or []),
+                    # Real raw-event span, so rebuild restores the true crystal
+                    # cursor instead of jumping to this event's persist time.
+                    "source_start_created_at": crystal.source_start_created_at,
+                    "source_end_created_at": crystal.source_end_created_at,
                 },
                 narrative_time_delta=0,
                 location="memory",

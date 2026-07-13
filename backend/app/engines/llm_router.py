@@ -273,6 +273,115 @@ _CONTEXT_WINDOWS: dict[str, int] = {
 }
 _DEFAULT_CONTEXT_WINDOW = 200_000  # reasonable fallback
 
+# FASE 2 prompt caching transport.
+# Narrator emits its system prompt as text blocks with cache_control on the stable
+# zones. On the Anthropic (CLIProxyAPI) path those blocks are cloaked into the first
+# user message so caching survives the proxy's OAuth handling; the extended-cache-ttl
+# beta header enables the 1h TTL. Other providers get a flat system string.
+_CACHE_HEADERS = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+_CLOAK_TAG = "narrator-instructions"
+
+# Models that 400 on non-default sampling params (temperature/top_p/top_k).
+# Opus 4.6 and Sonnet 4.6 still accept them.
+_NO_SAMPLING_MODELS = (
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+
+def _accepts_temperature(model: str) -> bool:
+    """False for models that reject sampling params. Handles the 'provider/model' form."""
+    bare = model.split("/")[-1]
+    return not any(bare.startswith(p) for p in _NO_SAMPLING_MODELS)
+
+
+def _is_cached_form(messages: list[dict]) -> bool:
+    """True when messages carry the FASE 2 cached form: a leading system message
+    whose content is a list of text blocks (zones)."""
+    return bool(messages) and messages[0].get("role") == "system" and isinstance(
+        messages[0].get("content"), list
+    )
+
+
+def _cloak_messages_for_anthropic(messages: list[dict]) -> list[dict]:
+    """Move the leading system blocks into a cloaked user message, preserving
+    cache_control. Block 0 is wrapped in <narrator-instructions> tags."""
+    system = messages[0]
+    blocks = system.get("content", [])
+    cloaked: list[dict] = []
+    for i, b in enumerate(blocks):
+        text = b.get("text", "")
+        if i == 0:
+            text = f"<{_CLOAK_TAG}>\n{text}\n</{_CLOAK_TAG}>"
+        new_block: dict = {"type": "text", "text": text}
+        if "cache_control" in b:
+            new_block["cache_control"] = b["cache_control"]
+        cloaked.append(new_block)
+    return [{"role": "user", "content": cloaked}] + messages[1:]
+
+
+def _flatten_system_for_openai(messages: list[dict]) -> list[dict]:
+    """Collapse the leading system blocks into a single plain system string."""
+    system = messages[0]
+    blocks = system.get("content", [])
+    text = "\n".join(b.get("text", "") for b in blocks if b.get("text"))
+    return [{"role": "system", "content": text}] + messages[1:]
+
+
+def _has_cache_control(messages: list[dict]) -> bool:
+    """True when any message content block carries cache_control (FASE 2 cloaked form)."""
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("cache_control"):
+                    return True
+    return False
+
+
+# litellm 1.43.0 strips content-block cache_control before it reaches the proxy, so the
+# FASE 2 cached narrator path is routed through the anthropic SDK directly. Adapters below
+# reshape the SDK response into the litellm-shaped object _log_call/_cache_tokens expect.
+@dataclass
+class _SDKUsage:
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+
+
+@dataclass
+class _SDKMessage:
+    content: str
+
+
+@dataclass
+class _SDKChoice:
+    message: _SDKMessage
+
+
+@dataclass
+class _SDKResponse:
+    choices: list
+    usage: _SDKUsage
+
+
+_anthropic_clients: dict = {}
+
+
+def _get_anthropic_client(base_url: str, api_key: str):
+    """Lazily build and cache an AsyncAnthropic client keyed by (base_url, api_key)."""
+    key = (base_url, api_key)
+    client = _anthropic_clients.get(key)
+    if client is None:
+        from anthropic import AsyncAnthropic
+        client = AsyncAnthropic(base_url=base_url, api_key=api_key, max_retries=0)
+        _anthropic_clients[key] = client
+    return client
+
 
 @dataclass
 class LLMConfig:
@@ -341,6 +450,72 @@ class LLMRouter:
             out.append(msg)
         return out
 
+    def _sampling_kwargs(self, model: str) -> dict:
+        """Sampling params for models that accept them; empty for the rest."""
+        if _accepts_temperature(model):
+            return {"temperature": self.config.temperature}
+        return {}
+
+    def _prepare_cached_messages(self, messages: list[dict], call_kwargs: dict) -> list[dict]:
+        """Apply the FASE 2 provider transform to cached-form messages.
+
+        Anthropic path: cloak zones into the first user message and set the
+        extended-cache-ttl beta header. Other providers: flatten to a system
+        string. Plain (non-cached-form) messages pass through untouched.
+        """
+        if not _is_cached_form(messages):
+            return messages
+        if self.config.primary_provider == LLMProvider.ANTHROPIC:
+            call_kwargs["extra_headers"] = {
+                **_CACHE_HEADERS,
+                **call_kwargs.get("extra_headers", {}),
+            }
+            return _cloak_messages_for_anthropic(messages)
+        return _flatten_system_for_openai(messages)
+
+    async def _complete_anthropic_sdk(
+        self, messages: list[dict], max_tokens: int, model: str,
+        api_base: str, extra_headers: dict | None, caller: str,
+    ) -> _SDKResponse:
+        """Send a cached-form Anthropic request through the anthropic SDK, preserving
+        cache_control (which litellm drops). Retries transient failures; returns a
+        litellm-shaped adapter so _log_call reads real cache usage."""
+        client = _get_anthropic_client(api_base, _ANTHROPIC_PROXY_KEY)
+        bare_model = model.split("/")[-1]
+        last_exc: Exception | None = None
+        total_attempts = len(_PROXY_RETRY_DELAYS) + 1
+        for attempt in range(total_attempts):
+            try:
+                msg = await client.messages.create(
+                    model=bare_model,
+                    max_tokens=max_tokens,
+                    messages=messages,
+                    extra_headers=extra_headers or None,
+                    **self._sampling_kwargs(bare_model),
+                )
+                text = "".join(
+                    getattr(b, "text", "") for b in msg.content
+                    if getattr(b, "type", None) == "text"
+                )
+                u = msg.usage
+                usage = _SDKUsage(
+                    prompt_tokens=getattr(u, "input_tokens", 0) or 0,
+                    completion_tokens=getattr(u, "output_tokens", 0) or 0,
+                    cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+                    cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+                )
+                return _SDKResponse(choices=[_SDKChoice(_SDKMessage(text))], usage=usage)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Anthropic SDK call failed (attempt %d/%d) [%s] err=%s: %s",
+                    attempt + 1, total_attempts, caller, type(exc).__name__, exc,
+                )
+                if attempt < len(_PROXY_RETRY_DELAYS):
+                    await asyncio.sleep(_PROXY_RETRY_DELAYS[attempt])
+        assert last_exc is not None
+        raise last_exc
+
     async def complete(self, messages: list[dict], **kwargs) -> str:
         caller = _get_caller()
         model = self._build_model_string(
@@ -349,18 +524,29 @@ class LLMRouter:
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
         api_base = self._get_api_base(self.config.primary_provider)
         call_kwargs = {**kwargs}
+        if self.config.primary_provider == LLMProvider.ANTHROPIC:
+            messages = self._sanitize_messages_for_anthropic(messages)
+        messages = self._prepare_cached_messages(messages, call_kwargs)
         if api_base:
             call_kwargs["api_base"] = api_base
             call_kwargs["api_key"] = _ANTHROPIC_PROXY_KEY
-        if self.config.primary_provider == LLMProvider.ANTHROPIC:
-            messages = self._sanitize_messages_for_anthropic(messages)
+        if (api_base and self.config.primary_provider == LLMProvider.ANTHROPIC
+                and _has_cache_control(messages)):
+            t0 = time.monotonic()
+            resp = await self._complete_anthropic_sdk(
+                messages, max_tokens, model, api_base,
+                call_kwargs.get("extra_headers"), caller,
+            )
+            _log_call(caller + "(anthropic-sdk)", messages, max_tokens, resp,
+                      time.monotonic() - t0, model=model)
+            return resp.choices[0].message.content
         t0 = time.monotonic()
         try:
             response = await litellm.acompletion(
                 model=model,
                 messages=messages,
-                temperature=self.config.temperature,
                 max_tokens=max_tokens,
+                **self._sampling_kwargs(model),
                 **call_kwargs,
             )
             _log_call(caller, messages, max_tokens, response, time.monotonic() - t0, model=model)
@@ -378,8 +564,8 @@ class LLMRouter:
                 response = await litellm.acompletion(
                     model=fallback_model,
                     messages=messages,
-                    temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
+                    **self._sampling_kwargs(fallback_model),
                     **fb_kwargs,
                 )
                 _log_call(caller, messages, max_tokens, response, time.monotonic() - t0, model=fallback_model)
@@ -396,9 +582,25 @@ class LLMRouter:
         call_kwargs = {**kwargs}
         if self.config.primary_provider == LLMProvider.ANTHROPIC:
             messages = self._sanitize_messages_for_anthropic(messages)
+        messages = self._prepare_cached_messages(messages, call_kwargs)
         if api_base:
             call_kwargs["api_base"] = api_base
             call_kwargs["api_key"] = _ANTHROPIC_PROXY_KEY
+            # FASE 2: cached-form Anthropic requests go through the anthropic SDK
+            # directly. litellm strips content-block cache_control, killing the cache.
+            if (self.config.primary_provider == LLMProvider.ANTHROPIC
+                    and _has_cache_control(messages)):
+                t0 = time.monotonic()
+                resp = await self._complete_anthropic_sdk(
+                    messages, max_tokens, model, api_base,
+                    call_kwargs.get("extra_headers"), caller,
+                )
+                _log_call(caller + "(anthropic-sdk)", messages, max_tokens, resp,
+                          time.monotonic() - t0, model=model)
+                content = resp.choices[0].message.content
+                if content:
+                    yield content
+                return
             # CLIProxyAPI streaming adds extra fields that confuse litellm's
             # SSE parser, so fall back to non-streaming and yield the result.
             # Retry on transient proxy/upstream failures so a single hiccup
@@ -412,9 +614,9 @@ class LLMRouter:
                     response = await litellm.acompletion(
                         model=model,
                         messages=messages,
-                        temperature=self.config.temperature,
                         max_tokens=max_tokens,
                         stream=False,
+                        **self._sampling_kwargs(model),
                         **call_kwargs,
                     )
                     last_exc = None
@@ -442,9 +644,9 @@ class LLMRouter:
         response = await litellm.acompletion(
             model=model,
             messages=messages,
-            temperature=self.config.temperature,
             max_tokens=max_tokens,
             stream=True,
+            **self._sampling_kwargs(model),
             **call_kwargs,
         )
         output_chars = 0

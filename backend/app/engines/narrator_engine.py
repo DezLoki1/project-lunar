@@ -29,6 +29,10 @@ _LANGUAGE_INSTRUCTIONS = {
     "pt-br": "Responda em português brasileiro (pt-br).",
 }
 
+# FASE 2: cache_control marker for the stable prompt zones. 1h TTL survives the
+# player's think time between turns; the router adds the extended-ttl beta header.
+_CACHE_CONTROL = {"type": "ephemeral", "ttl": "1h"}
+
 
 class NarratorEngine:
     def __init__(self, llm):
@@ -146,10 +150,10 @@ class NarratorEngine:
             "- End each response at a natural pause, not mid-action.\n"
             "- ALWAYS finish your response with a complete sentence. Never stop mid-word or mid-sentence.\n"
             "{length_instruction}"
-            "\nANTI-CLICHÉ / STYLISTIC VARIATION (CRITICAL — these tics break immersion):\n"
-            "- NPCs do NOT recap the player's actions back to them. FORBIDDEN: NPC dialogue that lists what the player just did or said as an enumerated chain (e.g. \"You arrive on my island. You ask for the name. You say you have a map. And you want to know if I know him.\" / \"You appeared out of nowhere, freed a prisoner, demanded to see the prison, and now you're inviting me to be your nakama.\"). A real character REACTS to the action — they do not echo it back as a checklist to prove they were listening. To show comprehension, use indirection: a single pointed question, a held silence, a gesture, a re-framing in the NPC's own words and worldview.\n"
-            "- AVOID the obsessive 'rule of three'. Short-clause triplets (\"One. Two. Three.\" / \"No boat. No crew. No plan.\" / \"There is no X. There is no Y. What there is, is Z.\") are an LLM tic — use AT MOST once every several responses, and only when genuinely earned by rhythm. Vary cadence: pairs, quartets, or a single long flowing sentence are usually stronger.\n"
-            "- FORBIDDEN: pseudo-precise metric description. Phrases like \"two millimeters to the side\", \"half a second longer than necessary\", \"one millimeter\", \"three respirations\" — fake quantification in sensory observation reads as robotic. Use qualitative observation: \"a fraction\", \"almost imperceptibly\", \"just long enough to notice\", \"the briefest pause\".\n"
+            "\nPROSE TEXTURE:\n"
+            "- An NPC shows it understood the player by acting on that understanding: a pointed question, a deliberate gesture, a sustained silence, or the situation re-cast in the NPC's own worldview. Let every reply carry the scene forward through intent.\n"
+            "- Let sentence rhythm follow the meaning of each moment so the cadence shifts naturally within a response, some lines clipped and taut where tension lands while others run long and flowing where the scene breathes.\n"
+            "- Ground sensation in qualitative perception: the feel, weight, and texture of a thing, the sense of how a beat lingers. Describe what the body actually notices.\n"
             "\nCOHERENCE RULES (CRITICAL):\n"
             "- NEVER contradict facts established in PLAYER INVENTORY or in MEMORY tier crystals (WORLD MEMORY).\n"
             "- An item's \"source\" / origin reason in INVENTORY is canonical. NPCs may interpret or speculate, but cannot rewrite the item's documented purpose.\n"
@@ -178,10 +182,10 @@ class NarratorEngine:
             "- Termine cada resposta em uma pausa natural, não no meio de uma ação.\n"
             "- SEMPRE termine sua resposta com uma frase completa. Nunca pare no meio de uma palavra ou frase.\n"
             "{length_instruction}"
-            "\nANTI-VÍCIOS DE LINGUAGEM (CRÍTICO — estes tiques quebram imersão):\n"
-            "- NPCs NÃO recapitulam as ações do jogador de volta pra ele. PROIBIDO: fala de NPC que lista o que o jogador acabou de fazer ou dizer numa cadeia enumerada (ex: \"Você chega na minha ilha. Pergunta pelo nome que nenhum forasteiro deveria saber. Diz que tem um mapa da operação. E quer saber se eu sei quem ele é.\" / \"Você apareceu do nada, soltou um prisioneiro na frente da Marinha inteira, exigiu ver a prisão, e agora está me convidando pra ser sua nakama.\"). Um personagem real REAGE à ação — ele NÃO ecoa a ação de volta como checklist pra provar que estava prestando atenção. Pra demonstrar que entendeu, use indireção: uma única pergunta direta, um silêncio sustentado, um gesto, ou uma releitura da situação nas palavras e na visão de mundo do próprio NPC.\n"
-            "- EVITE a 'regra de três' obsessiva. Trios de frases curtas (\"Uma. Duas. Três.\" / \"Sem barco. Sem tripulação. Sem plano.\" / \"Não há X. Não há Y. O que há é Z.\") são um vício de LLM — use NO MÁXIMO uma vez a cada várias respostas, e somente quando o ritmo realmente pedir. Varie a cadência: pares, quartetos, ou uma única frase longa e fluida costumam ser mais fortes.\n"
-            "- PROIBIDO pseudo-precisão métrica. Frases como \"dois milímetros pro lado\", \"meio segundo a mais do que o necessário\", \"um milímetro\", \"três respirações\" — quantificação falsa em observação sensorial soa robótica. Use observação qualitativa: \"uma fração\", \"quase imperceptivelmente\", \"o suficiente pra notar\", \"a menor das pausas\".\n"
+            "\nTEXTURA DA PROSA:\n"
+            "- Um NPC mostra que entendeu o jogador agindo a partir desse entendimento: uma pergunta certeira, um gesto deliberado, um silêncio sustentado, ou a situação recontada na visão de mundo do próprio NPC. Deixe cada resposta fazer a cena avançar pela intenção.\n"
+            "- Deixe o ritmo das frases seguir o sentido de cada momento para a cadência mudar com naturalidade dentro de uma resposta, algumas linhas curtas e tensas onde a tensão pesa enquanto outras se estendem longas e fluidas onde a cena respira.\n"
+            "- Ancore a sensação na percepção qualitativa: o toque, o peso e a textura de algo, a noção de como um instante se demora. Descreva o que o corpo de fato percebe.\n"
             "\nREGRAS DE COERÊNCIA (CRÍTICAS):\n"
             "- NUNCA contradiga fatos estabelecidos em PLAYER INVENTORY ou em crystals do tier MEMORY (WORLD MEMORY).\n"
             "- A \"source\" / razão de origem de um item no INVENTORY é canônica. NPCs podem interpretar ou especular, mas não podem reescrever o propósito documentado do item.\n"
@@ -199,12 +203,22 @@ class NarratorEngine:
         ),
     }
 
-    def _build_narrator_rules(self, max_tokens: int, language: str = "en") -> str:
-        """Build the static narrator rules block in the appropriate language."""
-        length_instruction = self._length_instruction(max_tokens)
+    def _build_narrator_rules(self, max_tokens: int, language: str = "en", include_length: bool = True) -> str:
+        """Build the static narrator rules block in the appropriate language.
+
+        include_length=False omits the per-request length instruction so the block
+        stays byte-stable for the cached zone; the length directive is emitted
+        separately into the volatile zone via length_directive().
+        """
+        length_instruction = self._length_instruction(max_tokens) if include_length else ""
         length_line = f"- {length_instruction}\n" if length_instruction else ""
         template = self._NARRATOR_RULES.get(language, self._NARRATOR_RULES["en"])
         return template.format(length_instruction=length_line)
+
+    def length_directive(self, max_tokens: int) -> str:
+        """Per-request length instruction (volatile). Belongs in zone 2, not cached zone 0."""
+        instruction = self._length_instruction(max_tokens)
+        return f"- {instruction}" if instruction else ""
 
     _OPENING_CANON_HEADER = (
         "\nOPENING NARRATIVE (CANONICAL — characters, names, places and facts "
@@ -319,6 +333,35 @@ class NarratorEngine:
 
         dynamic_part = "\n".join(dynamic_sections)
         return static_part, dynamic_part
+
+    def build_zone0(
+        self,
+        tone_instructions: str,
+        language: str,
+        character_setup: str = "",
+        opening_narrative: str = "",
+    ) -> str:
+        """FASE 2 cache zone 0: role + language + tone + opening + narrator rules.
+
+        Byte-identical across every turn of a campaign, so it becomes a cache read
+        from the 2nd turn. Excludes the per-request length instruction (volatile),
+        which the caller emits into zone 2 via length_directive().
+        """
+        lang_instruction = _LANGUAGE_INSTRUCTIONS.get(
+            language,
+            f"Respond in the language: {language}.",
+        )
+        sections = [
+            f"You are an AI narrator for an interactive RPG story. {lang_instruction}",
+        ]
+        if character_setup:
+            sections.append(f"\n{character_setup}")
+        if tone_instructions:
+            sections.append(f"\nTONE AND STYLE:\n{tone_instructions}")
+        if opening_narrative:
+            sections.append(self._OPENING_CANON_HEADER + opening_narrative)
+        sections.append(self._build_narrator_rules(0, language, include_length=False))
+        return "\n".join(sections)
 
     def build_meta_prompt(
         self,
@@ -458,6 +501,64 @@ class NarratorEngine:
         # Debug logging: log full response
         logger.debug(
             "=== NARRATOR STREAM RESPONSE ===\n"
+            "Response length: %d chars\n%s",
+            len(full_response),
+            full_response[:500] + ("..." if len(full_response) > 500 else ""),
+        )
+
+    async def stream_narrative_cached(
+        self,
+        player_input: str,
+        zone0: str,
+        zone1: str,
+        zone2: str,
+        history: list[dict],
+        context_window: int = 64_000,
+    ) -> AsyncIterator[str]:
+        """FASE 2 streaming path: system prompt split into cacheable zones.
+
+        Zone 0 (role/tone/rules) and zone 1 (LORE + permanent memory) carry
+        cache_control. Zone 2 is volatile. The router applies the provider
+        transform (Anthropic cloaking + beta header, or a flat system string
+        for OpenAI-compatible providers).
+        """
+        system_tokens = (
+            estimate_tokens(zone0) + estimate_tokens(zone1) + estimate_tokens(zone2)
+        )
+        history_slice = self._dynamic_history_slice(history, context_window, system_tokens)
+
+        blocks = [{"type": "text", "text": zone0, "cache_control": _CACHE_CONTROL}]
+        if zone1:
+            blocks.append({"type": "text", "text": zone1, "cache_control": _CACHE_CONTROL})
+        if zone2:
+            blocks.append({"type": "text", "text": zone2})
+
+        messages = [{"role": "system", "content": blocks}]
+        messages.extend(history_slice)
+        messages.append({"role": "user", "content": player_input})
+
+        logger.debug(
+            "=== NARRATOR CACHED STREAM REQUEST ===\n"
+            "Zone0=%d chars, Zone1=%d chars, Zone2=%d chars\n"
+            "History slice: %d messages (of %d total)\n"
+            "Player input: %s\n"
+            "Context window: %d",
+            len(zone0), len(zone1), len(zone2),
+            len(history_slice), len(history),
+            player_input, context_window,
+        )
+
+        full_response = ""
+        try:
+            async for chunk in self._llm.stream(messages=messages):
+                full_response += chunk
+                yield chunk
+        except Exception:
+            logger.exception("stream_narrative_cached LLM call failed; emitting fallback")
+            yield self._fallback_narrative(player_input)
+
+        logger.debug(
+            "=== NARRATOR CACHED STREAM RESPONSE ===\n"
             "Response length: %d chars\n%s",
             len(full_response),
             full_response[:500] + ("..." if len(full_response) > 500 else ""),

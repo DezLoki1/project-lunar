@@ -35,11 +35,9 @@ Constraints:
   or mid-sentence. Plan your closing sentence and leave token headroom
   to finish it cleanly.
 - No headings, no markdown beyond paragraph breaks.
-- Avoid stylistic tics: no rule-of-three short clauses ("No X. No Y.
-  No Z." / "One. Two. Three."), no pseudo-metric precision ("two
-  millimeters to the side", "half a second longer than necessary"),
-  and no recapping the player's setup back to them as a list. Vary
-  cadence; prefer qualitative observation over fake quantification.
+- Let sentence cadence follow the meaning of each moment, and ground the
+  senses in qualitative perception: the feel, weight, and texture of what
+  the body actually notices.
 """
 
 
