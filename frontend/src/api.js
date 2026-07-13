@@ -90,6 +90,7 @@ export function streamAction({
   onPlotAuto,
   onInventory,
   onTruncateClean,
+  onUsage,
   onDone,
   onError,
 }) {
@@ -156,6 +157,13 @@ export function streamAction({
         if (control.startsWith('[TRUNCATE_CLEAN]')) {
           const cleanText = control.slice(16)
           onTruncateClean?.(cleanText)
+          return false
+        }
+        if (control.startsWith('[USAGE]')) {
+          try {
+            const usage = JSON.parse(control.slice(7))
+            onUsage?.(usage)
+          } catch {}
           return false
         }
         // Strip inventory tags from narrative display

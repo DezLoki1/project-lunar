@@ -11,6 +11,9 @@ export const useGameStore = create((set) => ({
   isStreaming: false,
   combatMode: false,
 
+  // Devtools: last turn's LLM token usage summary (FASE 0 instrumentation)
+  lastUsage: null,
+
   // Journal state
   journal: [],
 
@@ -36,6 +39,7 @@ export const useGameStore = create((set) => ({
   },
   setStreaming: (isStreaming) => set({ isStreaming }),
   setCombatMode: (combatMode) => set({ combatMode }),
+  setLastUsage: (lastUsage) => set({ lastUsage }),
 
   appendMessage: (msg) =>
     set((s) => {

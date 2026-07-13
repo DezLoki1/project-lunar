@@ -48,11 +48,15 @@ def get_call_summary() -> dict:
     """Return a summary of all LLM calls in the current action."""
     total_input = sum(c.get("input_tokens", 0) for c in _call_log)
     total_output = sum(c.get("output_tokens", 0) for c in _call_log)
+    total_cache_read = sum(c.get("cache_read", 0) for c in _call_log)
+    total_cache_creation = sum(c.get("cache_creation", 0) for c in _call_log)
     total_time = sum(c.get("elapsed_s", 0) for c in _call_log)
     return {
         "call_count": len(_call_log),
         "total_input_tokens": total_input,
         "total_output_tokens": total_output,
+        "total_cache_read_tokens": total_cache_read,
+        "total_cache_creation_tokens": total_cache_creation,
         "total_tokens": total_input + total_output,
         "total_time_s": round(total_time, 2),
         "calls": [
@@ -60,6 +64,8 @@ def get_call_summary() -> dict:
                 "caller": c.get("caller", "?"),
                 "input_tokens": c.get("input_tokens", 0),
                 "output_tokens": c.get("output_tokens", 0),
+                "cache_read": c.get("cache_read", 0),
+                "cache_creation": c.get("cache_creation", 0),
                 "max_tokens": c.get("max_tokens", 0),
                 "elapsed_s": c.get("elapsed_s", 0),
                 "msg_count": c.get("msg_count", 0),
@@ -125,6 +131,20 @@ def _extract_response_text(response) -> str:
     return ""
 
 
+def _cache_tokens(usage) -> tuple[int, int]:
+    """(cache_read, cache_creation) from a litellm/Anthropic usage object.
+
+    Zero until FASE 2 wires cache_control; the fields make cache hits measurable."""
+    if usage is None:
+        return 0, 0
+    read = getattr(usage, "cache_read_input_tokens", None)
+    if read is None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        read = getattr(details, "cached_tokens", 0) if details else 0
+    creation = getattr(usage, "cache_creation_input_tokens", 0)
+    return int(read or 0), int(creation or 0)
+
+
 def _dump_call(
     caller: str,
     model: str,
@@ -135,6 +155,8 @@ def _dump_call(
     output_tokens: int,
     elapsed: float,
     streamed: bool,
+    cache_read: int = 0,
+    cache_creation: int = 0,
 ) -> None:
     """If enabled, write a full record of this LLM call to disk."""
     if not _DUMP_ENABLED:
@@ -152,6 +174,8 @@ def _dump_call(
             "max_tokens": max_tokens,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "cache_read": cache_read,
+            "cache_creation": cache_creation,
             "elapsed_s": round(elapsed, 3),
             "streamed": streamed,
             "msg_count": len(messages),
@@ -169,6 +193,7 @@ def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elap
     usage = getattr(response, "usage", None)
     input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
     output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+    cache_read, cache_creation = _cache_tokens(usage)
 
     # Fallback: estimate from chars if usage not available
     if not input_tokens:
@@ -178,6 +203,8 @@ def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elap
         "caller": caller,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cache_read": cache_read,
+        "cache_creation": cache_creation,
         "max_tokens": max_tokens,
         "elapsed_s": round(elapsed, 2),
         "msg_count": len(messages),
@@ -185,8 +212,8 @@ def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elap
     }
     _call_log.append(entry)
     logger.warning(
-        "🔥 LLM CALL [%s] input=%d output=%d max=%d time=%.1fs msgs=%d sys_chars=%d",
-        caller, input_tokens, output_tokens, max_tokens, elapsed,
+        "🔥 LLM CALL [%s] input=%d output=%d cache_r=%d cache_w=%d max=%d time=%.1fs msgs=%d sys_chars=%d",
+        caller, input_tokens, output_tokens, cache_read, cache_creation, max_tokens, elapsed,
         len(messages), system_chars,
     )
     _dump_call(
@@ -199,6 +226,8 @@ def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elap
         output_tokens=output_tokens,
         elapsed=elapsed,
         streamed=False,
+        cache_read=cache_read,
+        cache_creation=cache_creation,
     )
 
 
@@ -433,6 +462,8 @@ class LLMRouter:
             "caller": caller + "(stream)",
             "input_tokens": total_chars // 4,
             "output_tokens": output_chars // 4,
+            "cache_read": 0,
+            "cache_creation": 0,
             "max_tokens": max_tokens,
             "elapsed_s": elapsed,
             "msg_count": len(messages),

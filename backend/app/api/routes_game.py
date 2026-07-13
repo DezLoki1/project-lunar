@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from dataclasses import asdict
@@ -338,12 +339,19 @@ async def player_action(req: PlayerActionRequest):
             for line in text.split("\n"):
                 yield f"data: {line}\n"
             yield "\n"
+        # Per-turn token summary. Reflects the synchronous calls drained by the
+        # stream (detect_mode + narrator, ~90% of the turn's tokens); fire-and-forget
+        # side effects log separately and are not in this snapshot.
         summary = get_call_summary()
         logger.warning(
-            "📊 ACTION COMPLETE: %d LLM calls, %d input tokens, %d output tokens, %.1fs total",
+            "📊 ACTION COMPLETE: %d LLM calls, %d input, %d output, "
+            "%d cache_read, %d cache_creation, %.1fs total",
             summary["call_count"], summary["total_input_tokens"],
-            summary["total_output_tokens"], summary["total_time_s"],
+            summary["total_output_tokens"], summary["total_cache_read_tokens"],
+            summary["total_cache_creation_tokens"], summary["total_time_s"],
         )
+        # Ride the existing SSE control-tag channel to the frontend devtools readout.
+        yield f"data: [USAGE]{json.dumps(summary)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

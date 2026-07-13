@@ -76,6 +76,31 @@ function NarratorSkeleton() {
   )
 }
 
+/** Compact token count: 133200 -> "133.2k" (FASE 0 devtools readout) */
+function fmtTok(n) {
+  const v = Number(n) || 0
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`
+  return String(v)
+}
+
+/** Per-call breakdown tooltip for the usage readout */
+function usageTitle(u) {
+  if (!u) return ''
+  const lines = (u.calls || []).map(
+    (c) =>
+      `${c.caller}: in ${c.input_tokens} out ${c.output_tokens}` +
+      (c.cache_read ? ` cache_r ${c.cache_read}` : '') +
+      ` (${c.elapsed_s}s)`
+  )
+  return [
+    `${u.call_count} synchronous calls, ${u.total_time_s}s`,
+    `input ${u.total_input_tokens} · output ${u.total_output_tokens}`,
+    `cache read ${u.total_cache_read_tokens} · cache write ${u.total_cache_creation_tokens}`,
+    '',
+    ...lines,
+  ].join('\n')
+}
+
 export default function GameCanvas() {
   const {
     messages,
@@ -104,6 +129,8 @@ export default function GameCanvas() {
     updateSettings,
     replaceLastAssistantMessage,
     popLastPair,
+    lastUsage,
+    setLastUsage,
   } = useGameStore()
   const bottomRef = useRef(null)
   const [journalOpen, setJournalOpen] = useState(false)
@@ -295,6 +322,7 @@ export default function GameCanvas() {
       onTruncateClean: (cleanText) => {
         replaceLastAssistantMessage(cleanText)
       },
+      onUsage: setLastUsage,
       onDone: () => {
         setStreaming(false)
         // Clear combat mode after response completes
@@ -342,6 +370,18 @@ export default function GameCanvas() {
               </h1>
               <div className="flex items-center gap-2 text-white/40 text-xs font-mono uppercase">
                 <span>Link ID: {activeCampaignId?.slice(0, 8) || 'OFFLINE'}</span>
+                {lastUsage && (
+                  <span
+                    className="text-white/30 normal-case cursor-help border-l border-white/10 pl-2"
+                    title={usageTitle(lastUsage)}
+                  >
+                    ⛽ {fmtTok(lastUsage.total_input_tokens)}↓ {fmtTok(lastUsage.total_output_tokens)}↑
+                    {lastUsage.total_cache_read_tokens > 0 && (
+                      <span className="text-emerald-400/50"> {fmtTok(lastUsage.total_cache_read_tokens)}⚡</span>
+                    )}
+                    <span className="text-white/20"> · {lastUsage.call_count} calls</span>
+                  </span>
+                )}
               </div>
             </div>
           </div>
