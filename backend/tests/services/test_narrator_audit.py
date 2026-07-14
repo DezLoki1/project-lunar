@@ -48,7 +48,7 @@ async def test_audit_narrative_returns_corrected_prose():
     s = _make_session()
 
     class _Auditor:
-        async def audit(self, prose, player_input, language="en", tone_instructions="", max_tokens=2000):
+        async def audit(self, prose, player_input, language="en", tone_instructions="", max_tokens=2000, **kwargs):
             return "corrected prose", {"prose_rewritten": True, "corrections": [{"rule_violated": "form"}]}
 
     s._auditor = _Auditor()

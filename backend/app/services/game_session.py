@@ -1213,11 +1213,39 @@ class GameSession:
             logger.warning("Failed to build graph relationship summary", exc_info=True)
             return ""
 
-    async def _audit_narrative(self, prose: str, player_input: str) -> str:
+    # Recent-scene window (message count) the auditor sees for continuity carry-over.
+    _AUDIT_RECENT_SCENE_MSGS = 12
+
+    def _render_recent_scene(self) -> str:
+        """Prior turns' prose for the auditor: immediate physical continuity so an ability/item/
+        stance the player established earlier reads as legitimate carry-over, not narrator invention.
+        At audit time the current turn is not yet in _history, so this is strictly prior context."""
+        try:
+            window = self._open_scene_history()[-self._AUDIT_RECENT_SCENE_MSGS:]
+        except Exception:
+            return ""
+        lines = []
+        for m in window:
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            label = "PLAYER" if m.get("role") == "user" else "NARRATOR"
+            lines.append(f"{label}: {content}")
+        return "\n\n".join(lines)
+
+    @staticmethod
+    def _build_audit_world_context(sections: list[str]) -> str:
+        """Join the already-built, self-labeled world-context strings (established facts) for the
+        auditor's continuity/consistency cross-check. Empty pieces are skipped."""
+        return "\n\n".join(s.strip() for s in sections if s and s.strip())
+
+    async def _audit_narrative(self, prose: str, player_input: str, world_context: str = "") -> str:
         """FASE 3b: post-hoc auditor over finished prose, best-effort with timeout.
 
         Returns the surgically corrected prose, or the original on timeout/failure.
-        Never breaks a turn: any error reveals the untouched prose.
+        Never breaks a turn: any error reveals the untouched prose. The auditor gets the
+        recent scene (continuity) + world context so its agency ceiling is input + what
+        prior turns established, not the isolated turn line.
         """
         try:
             final_prose, report = await asyncio.wait_for(
@@ -1227,6 +1255,8 @@ class GameSession:
                     language=self.language,
                     tone_instructions=self.scenario_tone,
                     max_tokens=getattr(self, "_max_tokens", 2000),
+                    recent_scene=self._render_recent_scene(),
+                    world_context=world_context,
                 ),
                 timeout=_AUDIT_TIMEOUT_S,
             )
@@ -1436,7 +1466,13 @@ class GameSession:
         # raw_player_input is the unwrapped player line (combat injects a [SYSTEM]
         # directive into player_input); the auditor's agency ceiling must be the raw line.
         if _narrator_audit_enabled() and mode != NarrativeMode.META and full_response.strip():
-            full_response = await self._audit_narrative(full_response, raw_player_input or player_input)
+            audit_world_context = self._build_audit_world_context([
+                self._character_setup_block, permanent_ctx, memory_ctx,
+                story_cards_ctx, inventory_ctx, npc_ctx, journal_ctx,
+            ])
+            full_response = await self._audit_narrative(
+                full_response, raw_player_input or player_input, world_context=audit_world_context,
+            )
 
         # Send the clean narrative to frontend (all at once)
         yield full_response

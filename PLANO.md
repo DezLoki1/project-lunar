@@ -240,8 +240,10 @@ FASE 0 (instrumentação)  ──►  habilita medir tudo
 > A **Camada 2 (Auditor pós-hoc)** está no ar; a **Camada 1 (gate na fonte via tool-call)** foi
 > deliberadamente diferida, porque no estado atual do código ela exigiria reescrever o caminho de
 > geração (streaming + cache de 4 zonas via SDK anthropic direto) para forced tool-call no router
-> — alto risco sobre uma "otimização de segunda ordem". Próxima (opcional): **Camada 1**, orientada
-> pelo A/B do Auditor contra o baseline da FASE 0.
+> — alto risco sobre uma "otimização de segunda ordem". O **A/B do Auditor** (abaixo, concluído)
+> resolveu a questão: **a Camada 1 não se justifica como redutor de tic** (a FASE 3a já capturou o
+> ganho na fonte), e a Camada 2 pós-hoc é inerte no agregado + fez dano nas duas vezes que agiu. O
+> próximo trabalho de código não é a Camada 1, mas **corrigir a cegueira de contexto da Camada 2**.
 
 ## FASE 0 — concluída
 
@@ -545,3 +547,49 @@ Validação:
 Método: scouting inline → workflow de design do prompt (3 rascunhos → crítica adversarial → síntese) →
 implementação direta → workflow de review adversarial (5 dimensões, cético por achado) → correção dos 5
 confirmados → re-validação estrutural + end-to-end real.
+
+## FASE 3b — validação A/B do Auditor (concluída)
+
+A/B pareado do Auditor pós-hoc (Camada 2), mesmo método da FASE 3a. Como o Auditor roda sobre a prosa
+já pronta, o par (bruto, auditado) difere só pela auditoria — zero variância do narrador. Dois corpora
+(stress = regras OLD tic-densas; prod = regras NEW de produção), 18 inputs, DeepSeek V4 flash no narrador
+e no Auditor. Harness `backend/scripts/ab_auditor.py` + `prep_judge_3b.py` + `aggregate_3b.py`; judge cego
+via workflow `fase3b-blind-judge` (20 agentes: censo semântico de 72 passagens + verificação adversarial
+com contexto das reescritas). Detalhe e tabelas em `docs/fase3b_ab.md`.
+
+Achados (todos verificados):
+- **Rewrite ≈ 5,6%** (1/18 em cada corpus). Default-clean fortíssimo: mesmo na prosa tic-densa, reescreveu
+  1 de 18. **11% dos turnos (4/36) deram `parse_failed`** nas respostas mais longas (o `final_prose` inteiro
+  em JSON escapado é frágil no DeepSeek) — degrada com segurança, mas cobertura zero nos turnos mais ricos.
+- **Inerte no agregado.** A prosa bruta carrega ~4–5 tics semânticos/resposta (censo cego); o Auditor removeu
+  só o delta das duas reescritas. TOTAL stress 5,11→4,78; prod 4,00→4,00. Segurança perfeita: 0 violação de
+  item-tag, 0 queda de menção.
+- **As 2 intervenções foram julgadas PIORES que o original (4/4 cego, com contexto).** Uma foi regressão de
+  gosto (achatou uma linha ao cortar um `gesture_gloss`); a outra, **quebra de continuidade**: o Auditor,
+  **cego de contexto por design** (`_audit_narrative` passa só o `player_input` do turno, nunca o histórico),
+  excisou uma habilidade (eletricidade) que o jogador estabelecera no turno anterior — falso positivo de
+  agência **arquitetural**, não azar de amostra.
+
+Veredito: a hipótese "gate cura tic" **não se confirma** para o pós-hoc; a Camada 1 (gate na fonte) ataca um
+problema que a FASE 3a já resolveu na fonte (prod tem em_dash −77% e rule_of_three −75% vs stress). O trabalho
+de maior valor/menor risco **não** é a Camada 1 — é **dar contexto recente à regra de agência da Camada 2**
+(a janela de cena aberta da FASE 1 é exatamente esse recorte) para o teto virar "input + cena estabelecida"
+em vez de "input do turno isolado", ou escopá-la a fala/decisão nova. Limitação: N de reescritas = 2 (direção
+unânime, mas amostra pequena); a inércia agregada e a cegueira de contexto são robustas independente de N.
+
+### Correção aplicada — Auditor context-aware (porta o padrão do OP-RPG)
+
+Em vez da Camada 1, portado o **contexto total** do Auditor do OP-RPG, agnóstico de cenário. `AuditorEngine.audit()`
+recebe `recent_scene` (janela de cena aberta da FASE 1 — continuidade) + `world_context` (memória+cards+inventário+
+ficha+NPCs); `game_session` (`_render_recent_scene`, `_build_audit_world_context`) monta e passa. O prompt (EN+PT,
+workflow 3 rascunhos → crítica → síntese) reescreve AGÊNCIA (teto = input + cena estabelecida; fiscaliza só o que o
+narrador **inventou** além disso; NPC-iniciativa ≠ agência) e adiciona a régua CONTINUIDADE/CONSISTÊNCIA
+(`world_contradiction`, barra alta). `_PRE_EMIT_KEYS` +2 chaves.
+
+Re-validação na mesma prosa bruta (Auditor velho → novo, isola a mudança), adversarialmente verificada:
+**bug-alvo corrigido** — prod idx16 preserva a eletricidade estabelecida (excisão → clean, markers 4→4, robusto 2/2);
+**capacidade nova confirmada** — stress idx10 pega uma contradição de timeline (4/4 correto); parou o rewrite
+net-negativo do idx0; parse_failed 4/36 → 1/36. **Residual honesto:** um over-reach de agência mais raro quando um
+NPC propõe plano (idx13, 4/4 falso positivo); reforço no prompt reduz a ~2/3 clean, resíduo é model-dependent
+(DeepSeek; juízes Opus 4/4 corretos). Net fortemente positivo. 30/30 testes do Auditor passam. Detalhe em
+`docs/fase3b_ab.md` (seção "Correção — Auditor context-aware").
