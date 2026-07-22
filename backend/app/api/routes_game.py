@@ -17,7 +17,7 @@ from app.engines.combat_engine import CombatEngine
 from app.engines.plot_generator import PlotGenerator
 from app.engines.npc_mind_engine import NpcMindEngine
 from app.engines.inventory_engine import InventoryEngine
-from app.engines.llm_router import LLMRouter, LLMConfig, LLMProvider, reset_call_log, get_call_summary
+from app.engines.llm_router import LLMRouter, LLMConfig, LLMProvider, reset_call_log, get_call_summary, get_call_trace
 from app.engines.opening_generator import (
     format_setup_lines,
     generate_opening,
@@ -352,6 +352,10 @@ async def player_action(req: PlayerActionRequest):
         )
         # Ride the existing SSE control-tag channel to the frontend devtools readout.
         yield f"data: [USAGE]{json.dumps(summary)}\n\n"
+        # Full per-call trace (input sections + output) so the devtools panel can
+        # show exactly what each synchronous call sent. json.dumps escapes newlines,
+        # so the whole payload stays on one SSE data line.
+        yield f"data: [TRACE]{json.dumps(get_call_trace(), ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

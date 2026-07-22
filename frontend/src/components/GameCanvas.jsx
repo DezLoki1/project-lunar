@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Settings, Sparkles, Clock, Brain, Gem, Map, Backpack, BookOpen, Undo2, RefreshCw } from 'lucide-react'
+import { Settings, Sparkles, Clock, Brain, Gem, Map, Backpack, BookOpen, Undo2, RefreshCw, Terminal } from 'lucide-react'
 import { useGameStore } from '../store'
 import {
   streamAction,
@@ -21,6 +21,7 @@ import NpcInspector from './NpcInspector'
 import MemoryInspector from './MemoryInspector'
 import WorldMapModal from './WorldMapModal'
 import InventoryPanel from './InventoryPanel'
+import DevtoolsPanel from './DevtoolsPanel'
 
 /** Render text with @mentions highlighted in indigo */
 function MentionText({ children }) {
@@ -131,6 +132,9 @@ export default function GameCanvas() {
     popLastPair,
     lastUsage,
     setLastUsage,
+    traces,
+    pushTrace,
+    clearTraces,
   } = useGameStore()
   const bottomRef = useRef(null)
   const [journalOpen, setJournalOpen] = useState(false)
@@ -141,6 +145,7 @@ export default function GameCanvas() {
   const [memoryOpen, setMemoryOpen] = useState(false)
   const [mapOpen, setMapOpen] = useState(false)
   const [inventoryOpen, setInventoryOpen] = useState(false)
+  const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [rewinding, setRewinding] = useState(false)
   const [scenarioView, setScenarioView] = useState(null)
   const [regenerating, setRegenerating] = useState(false)
@@ -323,6 +328,7 @@ export default function GameCanvas() {
         replaceLastAssistantMessage(cleanText)
       },
       onUsage: setLastUsage,
+      onTrace: pushTrace,
       onDone: () => {
         setStreaming(false)
         // Clear combat mode after response completes
@@ -442,6 +448,19 @@ export default function GameCanvas() {
               className="p-2 rounded-lg bg-white/5 hover:bg-white text-white/80 hover:text-black rounded-2xl border border-white/5 hover:text-yellow-400 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
             >
               <BookOpen size={14} />
+            </button>
+            <button
+              onClick={() => setDevtoolsOpen(true)}
+              title="LLM Devtools — inspect what each call sends"
+              aria-label="Open LLM devtools"
+              className="relative p-2 rounded-lg bg-white/5 hover:bg-white text-white/80 hover:text-black rounded-2xl border border-white/5 hover:text-cyan-400 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+            >
+              <Terminal size={14} />
+              {traces.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-cyan-500 text-black text-[9px] font-bold flex items-center justify-center">
+                  {traces.length}
+                </span>
+              )}
             </button>
             <button
               onClick={() => setSettingsOpen(true)}
@@ -570,6 +589,7 @@ export default function GameCanvas() {
       <WorldMapModal open={mapOpen} onClose={() => setMapOpen(false)} campaignId={activeCampaignId} />
       <InventoryPanel open={inventoryOpen} onClose={() => setInventoryOpen(false)} campaignId={activeCampaignId} inventory={inventory} setInventory={setInventory} />
       <JournalPanel open={journalOpen} onClose={() => setJournalOpen(false)} entries={journal} onRefresh={refreshJournal} />
+      <DevtoolsPanel open={devtoolsOpen} onClose={() => setDevtoolsOpen(false)} traces={traces} onClear={clearTraces} />
     </div>
   )
 }

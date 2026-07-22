@@ -13,6 +13,8 @@ export const useGameStore = create((set) => ({
 
   // Devtools: last turn's LLM token usage summary (FASE 0 instrumentation)
   lastUsage: null,
+  // Devtools: rolling history of per-turn LLM call traces (input + output + usage)
+  traces: [],
 
   // Journal state
   journal: [],
@@ -40,6 +42,16 @@ export const useGameStore = create((set) => ({
   setStreaming: (isStreaming) => set({ isStreaming }),
   setCombatMode: (combatMode) => set({ combatMode }),
   setLastUsage: (lastUsage) => set({ lastUsage }),
+  pushTrace: (entries) =>
+    set((s) => {
+      if (!entries?.length) return {}
+      const key = `tr${s.traces.length + 1}`
+      const label = `turn ${s.traces.length + 1}`
+      const next = [...s.traces, { key, label, entries }]
+      // Cap history; traces carry full prompt bodies.
+      return { traces: next.slice(-25) }
+    }),
+  clearTraces: () => set({ traces: [] }),
 
   appendMessage: (msg) =>
     set((s) => {
@@ -150,7 +162,7 @@ export const useGameStore = create((set) => ({
       localStorage.removeItem('lunar_activeCampaignId')
       localStorage.removeItem('lunar_messages')
     } catch {}
-    set({ activeScenario: null, activeCampaignId: null, messages: [], journal: [], inventory: [] })
+    set({ activeScenario: null, activeCampaignId: null, messages: [], journal: [], inventory: [], traces: [], lastUsage: null })
   },
 
   // Restore settings on app load (called independently of restoreSession)

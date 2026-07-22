@@ -91,6 +91,7 @@ export function streamAction({
   onInventory,
   onTruncateClean,
   onUsage,
+  onTrace,
   onDone,
   onError,
 }) {
@@ -163,6 +164,13 @@ export function streamAction({
           try {
             const usage = JSON.parse(control.slice(7))
             onUsage?.(usage)
+          } catch {}
+          return false
+        }
+        if (control.startsWith('[TRACE]')) {
+          try {
+            const trace = JSON.parse(control.slice(7))
+            onTrace?.(trace)
           } catch {}
           return false
         }

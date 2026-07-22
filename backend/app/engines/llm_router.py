@@ -23,6 +23,12 @@ import litellm
 _DUMP_ENABLED = os.environ.get("LUNAR_DUMP_LLM_CALLS", "0") == "1"
 _DUMP_DIR = Path(os.environ.get("LUNAR_DUMP_LLM_DIR", "logs/llm_calls"))
 
+# Devtools trace: capture the full input (prompt sections) + output text of every
+# LLM call so the frontend panel can show exactly what each turn sent. Heavier than
+# the token counters, so it is gated and per-section capped.
+_TRACE_ENABLED = os.environ.get("LUNAR_DEVTOOLS_TRACE", "1") == "1"
+_TRACE_MAX_CHARS = int(os.environ.get("LUNAR_DEVTOOLS_TRACE_MAX", "20000"))
+
 # Retry delays (seconds) for transient proxy/upstream failures.
 # Total attempts = len(_PROXY_RETRY_DELAYS) + 1.
 _PROXY_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.5)
@@ -76,6 +82,29 @@ def get_call_summary() -> dict:
     }
 
 
+def get_call_trace() -> list[dict]:
+    """Full per-call trace (input sections + output + usage) for the devtools panel."""
+    trace: list[dict] = []
+    for i, c in enumerate(_call_log):
+        trace.append({
+            "seq": i + 1,
+            "tag": _trace_tag(c.get("caller", "")),
+            "label": c.get("caller", "?"),
+            "model": c.get("model", ""),
+            "instructions_chars": c.get("system_chars", 0),
+            "elapsed_s": c.get("elapsed_s", 0),
+            "usage": {
+                "input": c.get("input_tokens", 0),
+                "output": c.get("output_tokens", 0),
+                "cache_read": c.get("cache_read", 0),
+                "cache_creation": c.get("cache_creation", 0),
+            },
+            "input": c.get("input", []),
+            "output": c.get("output", ""),
+        })
+    return trace
+
+
 def _get_caller() -> str:
     """Walk the stack to find the meaningful caller (skip llm_router frames)."""
     for frame_info in inspect.stack()[2:6]:
@@ -114,6 +143,39 @@ def _serialize_messages(messages: list[dict]) -> list[dict]:
             ]
         out.append({"role": msg.get("role", ""), "content": content})
     return out
+
+
+def _trace_sections(messages: list[dict]) -> list[dict]:
+    """Render each message into a titled, length-capped section for the devtools panel."""
+    sections: list[dict] = []
+    for i, msg in enumerate(messages):
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        cached = False
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("cache_control"):
+                        cached = True
+                    parts.append(part.get("text", "") or json.dumps(part, ensure_ascii=False))
+                else:
+                    parts.append(str(part))
+            body = "\n".join(parts)
+        else:
+            body = str(content)
+        truncated = len(body) > _TRACE_MAX_CHARS
+        if truncated:
+            body = body[:_TRACE_MAX_CHARS] + f"\n… [+{len(body) - _TRACE_MAX_CHARS} chars truncated]"
+        title = f"#{i} · {role}" + (" · cache_control" if cached else "")
+        sections.append({"title": title, "body": body, "truncated": truncated})
+    return sections
+
+
+def _trace_tag(caller: str) -> str:
+    """Short semantic tag from a caller string for the panel badge."""
+    head = caller.split(":", 1)[0].split("(", 1)[0]
+    return head.replace("_engine", "") or "llm"
 
 
 def _extract_response_text(response) -> str:
@@ -201,6 +263,7 @@ def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elap
 
     entry = {
         "caller": caller,
+        "model": model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cache_read": cache_read,
@@ -210,6 +273,9 @@ def _log_call(caller: str, messages: list[dict], max_tokens: int, response, elap
         "msg_count": len(messages),
         "system_chars": system_chars,
     }
+    if _TRACE_ENABLED:
+        entry["input"] = _trace_sections(messages)
+        entry["output"] = _extract_response_text(response)
     _call_log.append(entry)
     logger.warning(
         "🔥 LLM CALL [%s] input=%d output=%d cache_r=%d cache_w=%d max=%d time=%.1fs msgs=%d sys_chars=%d",
@@ -662,6 +728,7 @@ class LLMRouter:
         elapsed = round(time.monotonic() - t0, 2)
         entry = {
             "caller": caller + "(stream)",
+            "model": model,
             "input_tokens": total_chars // 4,
             "output_tokens": output_chars // 4,
             "cache_read": 0,
@@ -671,6 +738,9 @@ class LLMRouter:
             "msg_count": len(messages),
             "system_chars": system_chars,
         }
+        if _TRACE_ENABLED:
+            entry["input"] = _trace_sections(messages)
+            entry["output"] = accumulated
         _call_log.append(entry)
         logger.warning(
             "🔥 LLM CALL [%s] input≈%d output≈%d max=%d time=%.1fs msgs=%d sys_chars=%d",
